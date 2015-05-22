@@ -334,6 +334,8 @@ namespace Sandbox.Engine.Physics
             }
         }
 
+        public bool Levitation { get; set; }
+
         public float Elevate
         {
             get

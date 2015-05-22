@@ -1497,6 +1497,12 @@ namespace Sandbox.Game.Entities.Character
                         return CharacterSounds[(int)CharacterSoundsEnum.JETPACK_RUN_SOUND];
                     }
                     break;
+                case MyCharacterMovementEnum.Levitating:
+                    {
+                        m_breath.CurrentState = MyCharacterBreath.State.Calm;
+                        return CharacterSounds[(int)CharacterSoundsEnum.NONE_SOUND];
+                    }
+                    break;
                 case MyCharacterMovementEnum.Falling:
                     {
                         m_breath.CurrentState = MyCharacterBreath.State.Calm;
@@ -1838,6 +1844,45 @@ namespace Sandbox.Game.Entities.Character
         public static bool TestInteractionDirection(Vector3 characterDirection, Vector3 toTargetDirection)
         {
             return Vector3.Dot(characterDirection, toTargetDirection) < INTERACTION_HALF_COS_ANGLE;
+        }
+
+        private bool RayCastLevitation()
+        {
+            var from = PositionComp.GetPosition() + WorldMatrix.Up * 0.1; //(needs some small distance from the bottom or the following call to HavokWorld.CastRay will find no hits)
+            var to = from + WorldMatrix.Down * 6;
+
+            MyPhysics.CastRay(from, to, m_hits);
+
+            // Skips invalid hits (null body, self character)
+            int index = 0;
+            while ((index < m_hits.Count) && ((m_hits[index].HkHitInfo.Body == null) || (m_hits[index].HkHitInfo.Body.GetEntity() == Entity.Components)))
+            {
+                index++;
+            }
+
+            if (index >= m_hits.Count) return false;
+
+            // We must take only closest hit (others are hidden behind)
+            var h = m_hits[index];
+            var entity = h.HkHitInfo.Body.GetEntity();
+
+            var sqDist = Vector3D.DistanceSquared((Vector3D)h.Position, @from);
+            if (!(sqDist < 6 * 6)) return false;
+
+            var grid = entity as MyCubeGrid;
+            if (grid == null) return false;
+
+            var pos = grid.RayCastBlocks(@from, to);
+
+            if (!pos.HasValue) return false;
+            var block = grid.GetCubeBlock(pos.Value);
+            if (block == null)
+                return false;
+
+            var levitater = block.FatBlock as IMyLevitater;
+            if (levitater == null || !levitater.IsWorking()) return false;
+
+            return true;
         }
 
         private Vector3? RayCastGround()
@@ -2453,6 +2498,15 @@ namespace Sandbox.Game.Entities.Character
             if (!MySandboxGame.IsGameReady || Physics == null || !Physics.Enabled || !MySession.Ready || Physics.HavokWorld == null)
                 return;
 
+            var newLevitation = false;
+            if (!JetpackEnabled || !IsJetpackPowered())
+                newLevitation = RayCastLevitation();
+            if (Physics.CharacterProxy.Levitation != newLevitation)
+            {
+                Physics.CharacterProxy.Levitation = newLevitation;
+                EnableJetpack(JetpackEnabled);
+            }
+
             //if (!ControllerInfo.IsRemotelyControlled() || (Sync.IsServer && false))
             if (ControllerInfo.IsLocallyControlled() && Physics.CharacterProxy != null)
             {
@@ -2467,6 +2521,30 @@ namespace Sandbox.Game.Entities.Character
                     if (Physics.CharacterProxy.LinearVelocity.Length() < MINIMAL_SPEED)
                     {
                         Physics.CharacterProxy.LinearVelocity = Vector3.Zero;
+                    }
+
+                    if (IsLevitating)
+                    {
+                        float velocity = Physics.CharacterProxy.LinearVelocity.Length();
+                        if (velocity > m_characterDefinition.MaxSprintSpeed)
+                        {
+                            var slowdown = m_characterDefinition.MaxSprintSpeed / velocity;
+                            Physics.CharacterProxy.LinearVelocity = Physics.CharacterProxy.LinearVelocity * slowdown;
+                        }
+                        Vector3 gravity = MyGravityProviderSystem.CalculateGravityInPoint(PositionComp.WorldAABB.Center) + Physics.HavokWorld.Gravity;
+                        Vector3 oldUp = Physics.CharacterProxy.Up;
+
+                        if ((gravity.LengthSquared() > 0.1f) && (oldUp != Vector3.Zero) && (gravity.IsValid()) && !Definition.VerticalPositionFlyingOnly)
+                        {
+                            Vector3 newUp = Physics.CharacterProxy.Up;
+                            Vector3 newForward = Physics.CharacterProxy.Forward;
+
+                            UpdateStandup(ref gravity, ref oldUp, ref newUp, ref newForward);
+                            m_currentAutoenableJetpackDelay = 0;
+
+                            Physics.CharacterProxy.Forward = newForward;
+                            Physics.CharacterProxy.Up = newUp;
+                        }
                     }
                 }
                 else if (IsOnLadder)
@@ -2619,7 +2697,8 @@ namespace Sandbox.Game.Entities.Character
                 if (
                     (m_currentMovementState == MyCharacterMovementEnum.Standing) ||
                     (m_currentMovementState == MyCharacterMovementEnum.Crouching) ||
-                    (m_currentMovementState == MyCharacterMovementEnum.Flying))
+                    (m_currentMovementState == MyCharacterMovementEnum.Flying) ||
+                    (m_currentMovementState == MyCharacterMovementEnum.Levitating))
                     m_currentHeadAnimationCounter += MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
                 else
                     m_currentHeadAnimationCounter = 0;
@@ -3051,7 +3130,7 @@ namespace Sandbox.Game.Entities.Character
                         else
                             if (CanFly() && !IsOnLadder && ((Physics.CharacterProxy != null && Physics.CharacterProxy.GetState() == HkCharacterStateType.HK_CHARACTER_IN_AIR) || (Physics.CharacterProxy != null && (int)Physics.CharacterProxy.GetState() == 5)))
                             {
-                                afterJumpState = MyCharacterMovementEnum.Flying;
+                                afterJumpState = IsLevitating ? MyCharacterMovementEnum.Levitating : MyCharacterMovementEnum.Flying;
                                 PlayCharacterAnimation("Jetpack", true, MyPlayAnimationMode.Immediate, 0.2f);
 
                                 m_canJump = true;
@@ -3213,7 +3292,7 @@ namespace Sandbox.Game.Entities.Character
 
                 if (rotationIndicator.X != 0)
                 {
-                    if (!CanFly())
+                    if (!CanFly() || IsLevitating)
                     {
                         if (((m_currentMovementState == MyCharacterMovementEnum.Died) && !m_isInFirstPerson)
                             ||
@@ -3260,7 +3339,7 @@ namespace Sandbox.Game.Entities.Character
 
             if (roll != 0)
             {
-                if (CanFly() && !Definition.VerticalPositionFlyingOnly)
+                if (CanFly() && !IsLevitating && !Definition.VerticalPositionFlyingOnly)
                 {
                     MatrixD rotationMatrix = WorldMatrix.GetOrientation();
                     Vector3D translation = WorldMatrix.Translation + WorldMatrix.Up;
@@ -3679,6 +3758,7 @@ namespace Sandbox.Game.Entities.Character
                     break;
 
                 case MyCharacterMovementEnum.Flying:
+                case MyCharacterMovementEnum.Levitating:
                     PlayCharacterAnimation("Jetpack", true, MyPlayAnimationMode.Immediate, 0.0f);
                     break;
 
@@ -3730,6 +3810,9 @@ namespace Sandbox.Game.Entities.Character
 
             if (m_currentJump > 0f)
                 return MyCharacterMovementEnum.Jump;
+
+            if (IsLevitating)
+                return MyCharacterMovementEnum.Levitating;
 
             if (CanFly())
                 return MyCharacterMovementEnum.Flying;
@@ -3822,6 +3905,7 @@ namespace Sandbox.Game.Entities.Character
                     case MyCharacterMovementEnum.LadderUp:
                     case MyCharacterMovementEnum.LadderDown:
                     case MyCharacterMovementEnum.Jump:
+                    case MyCharacterMovementEnum.Levitating:
                         break;
 
                     case MyCharacterMovementEnum.RotatingLeft:
@@ -4030,6 +4114,7 @@ namespace Sandbox.Game.Entities.Character
                     }
 
                 case MyCharacterMovementEnum.Sprinting:
+                case MyCharacterMovementEnum.Levitating:
                     {
                         m_currentSpeed = MathHelper.Clamp(m_currentSpeed, -Definition.MaxSprintSpeed, Definition.MaxSprintSpeed);
                         break;
@@ -5356,7 +5441,7 @@ namespace Sandbox.Game.Entities.Character
                 if (CanFly() && m_currentMovementState != MyCharacterMovementEnum.Died)
                 {
                     PlayCharacterAnimation("Jetpack", true, MyPlayAnimationMode.Immediate, 0.0f);
-                    SetCurrentMovementState(MyCharacterMovementEnum.Flying);
+                    SetCurrentMovementState(IsLevitating ? MyCharacterMovementEnum.Levitating : MyCharacterMovementEnum.Flying);
 
                     SetLocalHeadAnimation(0, 0, 0.3f);
                 }
@@ -5824,7 +5909,7 @@ namespace Sandbox.Game.Entities.Character
             if (m_currentMovementState == MyCharacterMovementEnum.Died)
                 return;
 
-            if(m_isFalling && m_previousMovementState != MyCharacterMovementEnum.Flying && (!JetpackEnabled || ! IsJetpackPowered()))
+            if(m_isFalling && m_previousMovementState != MyCharacterMovementEnum.Flying && (!JetpackEnabled || ! IsJetpackPowered()) && !IsLevitating)
                 PlayFallSound();
 
             if (Physics.CharacterProxy != null)
@@ -5866,13 +5951,18 @@ namespace Sandbox.Game.Entities.Character
             if (IsOnLadder)
                 return false;
 
-            if (!JetpackEnabled || !IsJetpackPowered())
+            if ((!JetpackEnabled || !IsJetpackPowered()) && !Physics.CharacterProxy.Levitation)
                 return false;
 
             if (IsDead)
                 return false;
 
             return true;
+        }
+
+        bool IsLevitating
+        {
+            get { return CanFly() && (!JetpackEnabled || !IsJetpackPowered()); }
         }
 
         public bool JetpackEnabled

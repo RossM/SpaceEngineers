@@ -403,6 +403,7 @@
     <Compile Include="Game\Entities\Blocks\MyLaserAntenna.cs" />
     <Compile Include="Game\Entities\Blocks\MyLaserBroadcaster.cs" />
     <Compile Include="Game\Entities\Blocks\MyLaserReceiver.cs" />
+    <Compile Include="Game\Entities\Blocks\MyLift.cs" />
     <Compile Include="Game\Entities\Blocks\MyOxygenFarm.cs" />
     <Compile Include="Game\Entities\Blocks\MyOxygenGenerator.cs" />
     <Compile Include="Game\Entities\Blocks\MyAirVent.cs" />
@@ -496,6 +497,7 @@
     <Compile Include="Game\Entities\UseObject\MyUseObjectFactory.cs" />
     <Compile Include="Game\GameSystems\Conveyors\MyAttachableConveyorEndpoint.cs" />
     <Compile Include="Game\Audio\MyGuiAudio.cs" />
+    <Compile Include="Game\GameSystems\IMyLevitater.cs" />
     <Compile Include="Game\GameSystems\IMyOxygenBlock.cs" />
     <Compile Include="Game\GameSystems\IMyOxygenConsumer.cs" />
     <Compile Include="Game\GameSystems\IMyOxygenProducer.cs" />

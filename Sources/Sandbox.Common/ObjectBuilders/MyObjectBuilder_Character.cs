@@ -68,6 +68,8 @@ namespace Sandbox.Common.ObjectBuilders
 
         Falling = 36,
         Died = 37,
+
+        Levitating = 38,
     }
 
     [ProtoContract]
