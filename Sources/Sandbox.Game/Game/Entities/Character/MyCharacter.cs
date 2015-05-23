@@ -533,6 +533,24 @@ namespace Sandbox.Game.Entities.Character
             set { base.Render = value; }
         }
 
+        private bool m_isLevitating;
+
+        public bool IsLevitating
+        {
+            get
+            {
+                return m_isLevitating;                 
+            }
+            set
+            {
+                if (m_isLevitating != value)
+                {
+                    m_isLevitating = value;
+                    EnableJetpack(JetpackEnabled);
+                }
+            }
+        }
+
         public MyRagdollMapper RagdollMapper;
 
         public event EventHandler OnWeaponChanged;
@@ -2498,14 +2516,7 @@ namespace Sandbox.Game.Entities.Character
             if (!MySandboxGame.IsGameReady || Physics == null || !Physics.Enabled || !MySession.Ready || Physics.HavokWorld == null)
                 return;
 
-            var newLevitation = false;
-            if (!JetpackEnabled || !IsJetpackPowered())
-                newLevitation = RayCastLevitation();
-            if (Physics.CharacterProxy.Levitation != newLevitation)
-            {
-                Physics.CharacterProxy.Levitation = newLevitation;
-                EnableJetpack(JetpackEnabled);
-            }
+            IsLevitating = (!JetpackEnabled || !IsJetpackPowered()) && RayCastLevitation();
 
             //if (!ControllerInfo.IsRemotelyControlled() || (Sync.IsServer && false))
             if (ControllerInfo.IsLocallyControlled() && Physics.CharacterProxy != null)
@@ -5951,18 +5962,13 @@ namespace Sandbox.Game.Entities.Character
             if (IsOnLadder)
                 return false;
 
-            if ((!JetpackEnabled || !IsJetpackPowered()) && !Physics.CharacterProxy.Levitation)
+            if ((!JetpackEnabled || !IsJetpackPowered()) && !IsLevitating)
                 return false;
 
             if (IsDead)
                 return false;
 
             return true;
-        }
-
-        bool IsLevitating
-        {
-            get { return CanFly() && (!JetpackEnabled || !IsJetpackPowered()); }
         }
 
         public bool JetpackEnabled
