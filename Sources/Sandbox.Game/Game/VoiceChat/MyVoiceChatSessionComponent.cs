@@ -1,4 +1,6 @@
-﻿using Sandbox.Common;
+﻿#if !NOVOIP
+
+using Sandbox.Common;
 using Sandbox.Engine.Networking;
 using System;
 using System.Collections.Generic;
@@ -445,3 +447,5 @@ namespace Sandbox.Game.VoiceChat
         }
     }
 }
+
+#endif

@@ -39,7 +39,9 @@ namespace Sandbox.Game.Gui
 
             AddShortcut(MyKeys.NumPad0, true, false, false, false, () => "Debug draw", DebugDrawFunc);
 
+#if !NOVOIP
             AddShortcut(MyKeys.NumPad9, true, false, false, false, OnRecording, ToggleVoiceChat);
+#endif
 
             if (MyPerGameSettings.Game == GameEnum.SE_GAME)
             {
@@ -391,6 +393,7 @@ namespace Sandbox.Game.Gui
             return string.Format("Auto select bot for debug: {0}", OnSelectDebugBot ? "TRUE" : "FALSE");
         }
 
+#if !NOVOIP
         private string OnRecording()
         {
             if (MyVoiceChatSessionComponent.Static != null)
@@ -411,6 +414,7 @@ namespace Sandbox.Game.Gui
             }
             return true;
         }
+#endif
 
         private bool NextHeadMatrix()
         {

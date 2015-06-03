@@ -540,6 +540,7 @@ namespace Sandbox.Game.Gui
                     }
                 }
 
+#if !NOVOIP
                 if (MyPerGameSettings.VoiceChatEnabled)
                 {
                     if (MyControllerHelper.IsControl(context, MyControlsSpace.VOICE_CHAT, MyControlStateType.NEW_PRESSED))
@@ -551,6 +552,7 @@ namespace Sandbox.Game.Gui
                         MyVoiceChatSessionComponent.Static.StopRecording();
                     }
                 }
+#endif
             }
 
             MoveAndRotatePlayerOrCamera();
