@@ -1,4 +1,6 @@
-﻿using System.Collections.Generic;
+﻿#if !XB1
+
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Sandbox.Graphics.GUI;
@@ -10,6 +12,7 @@ using VRage.Common.Utils;
 using VRageMath;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.GameSystems.StructuralIntegrity;
+using VRage.Game.Entity;
 
 namespace Sandbox.Game.Gui
 {
@@ -113,3 +116,5 @@ namespace Sandbox.Game.Gui
         }
     }
 }
+
+#endif

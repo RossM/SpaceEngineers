@@ -64,11 +64,11 @@ namespace VRageRender
         /// </summary>
         public MyFont(string fontFilePath, int spacing = 1)
         {
-            MyLog.Default.WriteLine("MyFont.Ctor - START");
-            using (var indent = MyLog.Default.IndentUsing(LoggingOptions.MISC_RENDER_ASSETS))
+            MyRenderProxy.Log.WriteLine("MyFont.Ctor - START");
+            using (var indent = MyRenderProxy.Log.IndentUsing(LoggingOptions.MISC_RENDER_ASSETS))
             {
                 Spacing = spacing;
-                MyLog.Default.WriteLine("Font filename: " + fontFilePath);
+                MyRenderProxy.Log.WriteLine("Font filename: " + fontFilePath);
 
                 path = Path.Combine(MyFileSystem.ContentPath, fontFilePath);
                 if (!File.Exists(path))
@@ -81,60 +81,67 @@ namespace VRageRender
                 m_fontDirectory = Path.GetDirectoryName(path);
                 LoadFontXML();
 
-                MyLog.Default.WriteLine("FontFilePath: " + path);
-                MyLog.Default.WriteLine("LineHeight: " + LineHeight);
-                MyLog.Default.WriteLine("Baseline: " + Baseline);
-                MyLog.Default.WriteLine("KernEnabled: " + KernEnabled);
+                MyRenderProxy.Log.WriteLine("FontFilePath: " + path);
+                MyRenderProxy.Log.WriteLine("LineHeight: " + LineHeight);
+                MyRenderProxy.Log.WriteLine("Baseline: " + Baseline);
+                MyRenderProxy.Log.WriteLine("KernEnabled: " + KernEnabled);
             }
-            MyLog.Default.WriteLine("MyFont.Ctor - END");
+            MyRenderProxy.Log.WriteLine("MyFont.Ctor - END");
         }
 
         //  Calculate the width of the given string.
         //  Returns: Width and height (in pixels) of the string
         public Vector2 MeasureString(StringBuilder text, float scale)
         {
-            scale *= MyRenderGuiConstants.FONT_SCALE;
-            float pxWidth = 0;
-            char cLast = '\0';
-
-            float maxPxWidth = 0;
-            int lines = 1;
-            for (int i = 0; i < text.Length; i++)
+            try
             {
-                char c = text[i];
+                scale *= MyRenderGuiConstants.FONT_SCALE;
+                float pxWidth = 0;
+                char cLast = '\0';
 
-                //  New line
-                if (c == NEW_LINE)
+                float maxPxWidth = 0;
+                int lines = 1;
+                for (int i = 0; i < text.Length; i++)
                 {
-                    lines++;
-                    pxWidth = 0;
-                    cLast = '\0';
-                    continue;
+                    char c = text[i];
+
+                    //  New line
+                    if (c == NEW_LINE)
+                    {
+                        lines++;
+                        pxWidth = 0;
+                        cLast = '\0';
+                        continue;
+                    }
+
+                    if (!CanWriteOrReplace(ref c))
+                        continue;
+
+                    MyGlyphInfo ginfo = m_glyphInfoByChar[c];
+
+                    // if kerning is enabled, get the kern adjustment for this char pair
+                    if (KernEnabled)
+                    {
+                        pxWidth += CalcKern(cLast, c);
+                        cLast = c;
+                    }
+
+                    //  update the string width
+                    pxWidth += ginfo.pxAdvanceWidth;
+
+                    //  Spacing
+                    if (i < (text.Length - 1)) pxWidth += Spacing;
+
+                    //  Because new line
+                    if (pxWidth > maxPxWidth) maxPxWidth = pxWidth;
                 }
 
-                if (!CanWriteOrReplace(ref c))
-                    continue;
-
-                MyGlyphInfo ginfo = m_glyphInfoByChar[c];
-
-                // if kerning is enabled, get the kern adjustment for this char pair
-                if (KernEnabled)
-                {
-                    pxWidth += CalcKern(cLast, c);
-                    cLast = c;
-                }
-
-                //  update the string width
-                pxWidth += ginfo.pxAdvanceWidth;
-
-                //  Spacing
-                if (i < (text.Length - 1)) pxWidth += Spacing;
-
-                //  Because new line
-                if (pxWidth > maxPxWidth) maxPxWidth = pxWidth;
+                return new Vector2(maxPxWidth * scale, lines * LineHeight * scale);
             }
-
-            return new Vector2(maxPxWidth * scale, lines * LineHeight * scale);
+            catch (System.IndexOutOfRangeException)
+            {
+                return Vector2.Zero;
+            }
         }
 
         protected bool CanWriteOrReplace(ref char c)
@@ -208,7 +215,7 @@ namespace VRageRender
         //  Returns: Amount to kern (in pixels)
         protected int CalcKern(char chLeft, char chRight)
         {
-            sbyte kern;
+            sbyte kern = 0;
             m_kernByPair.TryGetValue(new KernPair(chLeft, chRight), out kern);
             return kern;
         }

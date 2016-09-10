@@ -11,6 +11,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
+using VRage.Game;
 using VRage.Utils;
 using VRageMath;
 
@@ -22,15 +23,21 @@ namespace Sandbox.Game.Screens.Helpers
         {
 			MyEntityStat m_stat;
 			MyGuiControlLabel m_statNameLabel;
+            MyGuiControlPanel m_progressBarBorder;
+            MyGuiControlPanel m_progressBarDivider;
 			MyGuiControlProgressBar m_progressBar;
 			MyGuiControlPanel m_effectArrow;
 			MyGuiControlLabel m_statValueLabel;
+            Color m_criticalValueColorFrom;
+            Color m_criticalValueColorTo;
 
 			private static MyGuiCompositeTexture m_arrowUp = new MyGuiCompositeTexture(MyGuiConstants.TEXTURE_HUD_STAT_EFFECT_ARROW_UP.Texture);
 			private static MyGuiCompositeTexture m_arrowDown = new MyGuiCompositeTexture(MyGuiConstants.TEXTURE_HUD_STAT_EFFECT_ARROW_DOWN.Texture);
 
 			private float m_lastTotalValue = 0.0f;
             private float m_potentialChange = 0.0f;
+            private float m_flashingProgress = 0.0f;
+			private int m_lastFlashTime = MySandboxGame.TotalGamePlayTimeInMilliseconds;
 
 			private bool m_recalculatePotential = false;
             public float PotentialChange
@@ -49,6 +56,10 @@ namespace Sandbox.Game.Screens.Helpers
             {
 				Debug.Assert(stat != null);
 				m_stat = stat;
+                var vecColor = m_stat.StatDefinition.GuiDef.CriticalColorFrom;
+                m_criticalValueColorFrom = new Color(vecColor.X, vecColor.Y, vecColor.Z);
+                vecColor = m_stat.StatDefinition.GuiDef.CriticalColorTo;
+                m_criticalValueColorTo = new Color(vecColor.X, vecColor.Y, vecColor.Z);
 				if(m_stat != null)
 				{
 					m_stat.OnStatChanged += UpdateStatControl;
@@ -59,7 +70,7 @@ namespace Sandbox.Game.Screens.Helpers
 			{
 				if(m_stat != null)
 				{
-					m_stat.OnStatChanged -= UpdateStatControl;
+                    m_stat.OnStatChanged -= UpdateStatControl;
 				}
 				base.OnRemoving();
 			}
@@ -104,6 +115,20 @@ namespace Sandbox.Game.Screens.Helpers
 						m_progressBar.PotentialBar.Visible = false;
 					}
 					m_lastTotalValue = totalValue;
+
+
+                    if (m_stat.CurrentRatio <= m_stat.StatDefinition.GuiDef.CriticalRatio)
+                    {
+                        m_flashingProgress = (MySandboxGame.TotalGamePlayTimeInMilliseconds - m_lastFlashTime) * 0.001f;
+                        m_progressBarBorder.Visible = true;
+                        m_progressBarBorder.BorderColor = Vector4.Lerp(m_criticalValueColorFrom, m_criticalValueColorTo, m_flashingProgress);
+                        if (m_flashingProgress >= 1f)
+                            m_lastFlashTime = MySandboxGame.TotalGamePlayTimeInMilliseconds;
+                    }
+                    else
+                    {
+                        m_progressBarBorder.Visible = false;
+                    }
 				}
 
 			}
@@ -164,6 +189,8 @@ namespace Sandbox.Game.Screens.Helpers
 				var arrowIconOffset = barOffset + barLength/Size.X + 0.05f;
 				var rightTextOffset = arrowIconOffset + arrowIconSize.X + 0.035f;
 
+                var statGuiDef = m_stat.StatDefinition.GuiDef;
+
 				m_statNameLabel = new MyGuiControlLabel(position: Size * new Vector2(leftTextOffset, textHeightOffset),
 														text: m_stat.StatId.ToString(),
 														textScale: textScale,
@@ -178,7 +205,8 @@ namespace Sandbox.Game.Screens.Helpers
 															originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER,
 															size: new Vector2(barLength, Size.Y),
 															backgroundTexture: new MyGuiCompositeTexture(MyGuiConstants.TEXTURE_HUD_STAT_BAR_BG.Texture),
-															progressBarColor: barColor);
+															progressBarColor: barColor,
+                                                            enableBorderAutohide: true);
 				if (m_stat != null)
 					m_progressBar.Value = m_stat.CurrentRatio;
 
@@ -188,6 +216,25 @@ namespace Sandbox.Game.Screens.Helpers
 				m_progressBar.PotentialBar.Position = m_progressBar.ForegroundBar.Position;
 				m_recalculatePotential = true;
 				Elements.Add(m_progressBar);
+
+                m_progressBarDivider = new MyGuiControlPanel(position: Size * new Vector2(barOffset, 0.0f),
+                                                            originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER,
+                                                            size: new Vector2(barLength * statGuiDef.CriticalRatio, Size.Y));
+                m_progressBarDivider.Visible = statGuiDef.DisplayCriticalDivider;
+                m_progressBarDivider.BorderColor = Color.Black;
+                m_progressBarDivider.BorderSize = 1;
+                m_progressBarDivider.BorderEnabled = true;
+                Elements.Add(m_progressBarDivider);
+
+
+                m_progressBarBorder = new MyGuiControlPanel(position: Size * new Vector2(barOffset, 0.0f),
+                                                            originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER,
+                                                            size: new Vector2(barLength, Size.Y));
+                m_progressBarBorder.Visible = false;
+                m_progressBarBorder.BorderColor = Color.Black;
+                m_progressBarBorder.BorderSize = 2;
+                m_progressBarBorder.BorderEnabled = true;
+                Elements.Add(m_progressBarBorder);
 
 				m_effectArrow = new MyGuiControlPanel(	position: Size * new Vector2(arrowIconOffset, 0.0f),
 														originAlign: MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER,
@@ -222,10 +269,10 @@ namespace Sandbox.Game.Screens.Helpers
             base.Update();
 
             MyCharacterStatComponent statComponent = null;
-            if (MySession.LocalCharacter != null)
-                statComponent = MySession.LocalCharacter.StatComp;
+            if (MySession.Static.LocalCharacter != null)
+                statComponent = MySession.Static.LocalCharacter.StatComp;
 
-			if (statComponent != m_statComponent)
+			if (statComponent != null && statComponent != m_statComponent && statComponent.Stats.Count > 0) // statComponent can be changed during the update, however, it may not be filled up with stats yet in that time..
             {
 				m_statComponent = statComponent;
 				m_sortedStats.Clear();
@@ -305,6 +352,11 @@ namespace Sandbox.Game.Screens.Helpers
         public void SetPotentialStatChange(MyDefinitionId consumableId)
         {
             var definition = MyDefinitionManager.Static.GetDefinition(consumableId) as MyConsumableItemDefinition;
+            // no longer relevant since we are using MyUsableItemDefinition for food too
+            //Debug.Assert(definition != null, "Consumable definition not found!");
+            if (definition == null)
+                return;
+
             foreach (var statValue in definition.Stats)
             {
                 SetPotentialStatChange(statValue.Name, statValue.Value * statValue.Time);
@@ -314,6 +366,11 @@ namespace Sandbox.Game.Screens.Helpers
         public void ClearPotentialStatChange(MyDefinitionId consumableId)
         {
             var definition = MyDefinitionManager.Static.GetDefinition(consumableId) as MyConsumableItemDefinition;
+            // no longer relevant since we are using MyUsableItemDefinition for food too
+            //Debug.Assert(definition != null, "Consumable definition not found!");
+            if (definition == null)
+                return;
+
             foreach (var statValue in definition.Stats)
             {
                 SetPotentialStatChange(statValue.Name, 0.0f);

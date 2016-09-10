@@ -6,12 +6,17 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 using Sandbox.Common;
+using VRage.Game;
 using VRage.Plugins;
 using VRage.ObjectBuilders;
+using VRage.Game.Common;
+#if XB1 // XB1_ALLINONEASSEMBLY
+using VRage.Utils;
+#endif // XB1
 
 namespace Sandbox.Game.World
 {
-    public delegate void GlobalEventHandler(MyGlobalEventBase sender);
+    //public delegate void GlobalEventHandler(MyGlobalEventBase sender);
 
     [AttributeUsage(AttributeTargets.Method, AllowMultiple = true)]
     [Obfuscation(Feature = Obfuscator.NoRename, Exclude = true)]
@@ -33,24 +38,41 @@ namespace Sandbox.Game.World
 
     public class MyGlobalEventFactory
     {
-        static readonly Dictionary<MyDefinitionId, GlobalEventHandler> m_typesToHandlers;
+#if XB1 // XB1_ALLINONEASSEMBLY
+        private static bool m_registered = false;
+#endif // XB1
+
+        //static readonly Dictionary<MyDefinitionId, GlobalEventHandler> m_typesToHandlers;
+		static readonly Dictionary<MyDefinitionId, MethodInfo> m_typesToHandlers;
         static MyObjectFactory<MyEventTypeAttribute, MyGlobalEventBase> m_globalEventFactory;
 
         static MyGlobalEventFactory()
         {
-            m_typesToHandlers = new Dictionary<MyDefinitionId, GlobalEventHandler>();
+			m_typesToHandlers = new Dictionary<MyDefinitionId, MethodInfo>();
             m_globalEventFactory = new MyObjectFactory<MyEventTypeAttribute, MyGlobalEventBase>();
 
+#if XB1 // XB1_ALLINONEASSEMBLY
+            RegisterEventTypesAndHandlers(MyAssembly.AllInOneAssembly);
+#else // !XB1
             RegisterEventTypesAndHandlers(Assembly.GetAssembly(typeof(MyGlobalEventBase)));
             RegisterEventTypesAndHandlers(MyPlugins.GameAssembly);
             RegisterEventTypesAndHandlers(MyPlugins.SandboxAssembly);
+#endif // !XB1
         }
 
         private static void RegisterEventTypesAndHandlers(Assembly assembly)
         {
             if (assembly == null) return;
 
+#if XB1 // XB1_ALLINONEASSEMBLY
+            System.Diagnostics.Debug.Assert(m_registered == false);
+            if (m_registered == true)
+                return;
+            m_registered = true;
+            foreach (Type type in MyAssembly.GetTypes())
+#else // !XB1
             foreach (Type type in assembly.GetTypes())
+#endif // !XB1
             {
                 foreach (MethodInfo method in type.GetMethods())
                 {
@@ -63,7 +85,7 @@ namespace Sandbox.Game.World
                         {
                             MyGlobalEventHandler typedDescriptor = (MyGlobalEventHandler)descriptor;
 
-                            RegisterHandler(typedDescriptor.EventDefinitionId, MethodInfoExtensions.CreateDelegate<GlobalEventHandler>(method));
+                            RegisterHandler(typedDescriptor.EventDefinitionId, method);
                         }
                     }
                 }
@@ -72,16 +94,16 @@ namespace Sandbox.Game.World
             m_globalEventFactory.RegisterFromAssembly(assembly);
         }
 
-        private static void RegisterHandler(MyDefinitionId eventDefinitionId, GlobalEventHandler handler)
+        private static void RegisterHandler(MyDefinitionId eventDefinitionId, MethodInfo handler)
         {
             Debug.Assert(!m_typesToHandlers.ContainsKey(eventDefinitionId), "One event definition id can only have one event handler!");
 
             m_typesToHandlers[eventDefinitionId] = handler;
         }
 
-        public static GlobalEventHandler GetEventHandler(MyDefinitionId eventDefinitionId)
+        public static MethodInfo GetEventHandler(MyDefinitionId eventDefinitionId)
         {
-            GlobalEventHandler handler = null;
+            MethodInfo handler = null;
             m_typesToHandlers.TryGetValue(eventDefinitionId, out handler);
             return handler;
         }

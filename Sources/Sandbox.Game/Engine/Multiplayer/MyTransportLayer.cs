@@ -1,5 +1,7 @@
 ﻿using ProtoBuf;
+#if !XB1 // XB1_NOPROTOBUF
 using ProtoBuf.Meta;
+#endif //!XB1
 using Sandbox.Engine.Networking;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Gui;
@@ -22,6 +24,7 @@ using VRage.Replication;
 using VRage.Library.Collections;
 using VRage.Network;
 using VRage.Library.Utils;
+using Sandbox.Game.World;
 
 namespace Sandbox.Engine.Multiplayer
 {
@@ -81,6 +84,10 @@ namespace Sandbox.Engine.Multiplayer
 
     partial class MyTransportLayer
     {
+#if XB1 // XB1_ALLINONEASSEMBLY
+        private static bool m_registered = false;
+#endif // XB1
+
         struct Request<T> { }
         struct Success<T> { }
         struct Failure<T> { }
@@ -105,6 +112,9 @@ namespace Sandbox.Engine.Multiplayer
         {
             TypeMap = new Dictionary<Type, Tuple<ushort, P2PMessageEnum>>();
 
+#if XB1 // XB1_ALLINONEASSEMBLY
+            RegisterFromAssembly(MyAssembly.AllInOneAssembly);
+#else // !XB1
             RegisterFromAssembly(typeof(MyTransportLayer).Assembly);
 
             if (MyPlugins.GameAssembly != null)
@@ -112,11 +122,20 @@ namespace Sandbox.Engine.Multiplayer
 
             if (MyPlugins.UserAssembly != null)
                 RegisterFromAssembly(MyPlugins.UserAssembly);
+#endif // !XB1
         }
 
         static void RegisterFromAssembly(Assembly assembly)
         {
+#if XB1 // XB1_ALLINONEASSEMBLY
+            System.Diagnostics.Debug.Assert(m_registered == false);
+            if (m_registered == true)
+                return;
+            m_registered = true;
+            foreach (var type in MyAssembly.GetTypes())
+#else // !XB1
             foreach (var type in assembly.GetTypes())
+#endif // !XB1
             {
                 var attribute = Attribute.GetCustomAttribute(type, typeof(MessageIdAttribute)) as MessageIdAttribute;
                 if (attribute != null)
@@ -383,7 +402,7 @@ namespace Sandbox.Engine.Multiplayer
                 if (m_buffer != null)
                     m_buffer.Clear();
             }
-            else if (IsBuffering) // Buffer event
+            else if (IsBuffering && id != MyMessageId.JOIN_RESULT && id != MyMessageId.WORLD_DATA && id !=  MyMessageId.WORLD_BATTLE_DATA) // Buffer event
             {
                 var buff = new Buffer();
                 buff.Sender = sender;
@@ -406,6 +425,21 @@ namespace Sandbox.Engine.Multiplayer
             Debug.Assert(data.Length >= dataSize, "Wrong size");
 
             MyMessageId id = (MyMessageId)data[0];
+
+
+            if (id == MyMessageId.CLIENT_CONNNECTED)
+            {
+                MyNetworkClient player;
+                if (Sync.Layer != null && Sync.Layer.Clients != null)
+                {
+                    bool playerFound = Sync.Layer.Clients.TryGetClient(sender, out player);
+
+                    if (!playerFound)
+                    {
+                        Sync.Layer.Clients.AddClient(sender);
+                    }
+                }
+            }
 
             MyPacket p = new MyPacket();
             p.Data = data;
@@ -575,6 +609,10 @@ namespace Sandbox.Engine.Multiplayer
         public void Clear()
         {
             MyNetworkReader.ClearHandler(MyMultiplayer.GameEventChannel);
+            if(m_buffer != null)
+            {
+                m_buffer.Clear();
+            }
         }
 
         public void ClearStats()

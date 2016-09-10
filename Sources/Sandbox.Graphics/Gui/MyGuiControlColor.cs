@@ -1,6 +1,6 @@
-﻿using Sandbox.Common;
-using System;
+﻿using System;
 using System.Text;
+using VRage.Game;
 using VRage.Input;
 using VRage.Utils;
 using VRageMath;

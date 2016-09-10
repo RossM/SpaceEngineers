@@ -11,7 +11,10 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using VRage;
+using VRage.Game;
+using VRage.Game.Entity;
 using VRage.Utils;
+using VRage.Library;
 
 namespace Sandbox.Game.World.Triggers
 {
@@ -46,7 +49,7 @@ namespace Sandbox.Game.World.Triggers
             return trigger;
         }
 
-        public override void DisplayHints(MyPlayer player, Entities.MyEntity me)
+        public override void DisplayHints(MyPlayer player, MyEntity me)
         {
             foreach (var item in m_blocks)
             {
@@ -58,7 +61,7 @@ namespace Sandbox.Game.World.Triggers
             foreach (var block in m_blocksHelper)
             {
                 if (SingleMessage != null)
-                    MyAPIGateway.Utilities.ShowNotification(string.Format(SingleMessage, block.CustomName), 20000, Sandbox.Common.MyFontEnum.Blue);
+                    MyAPIGateway.Utilities.ShowNotification(string.Format(SingleMessage, block.CustomName), 20000, MyFontEnum.Blue);
                 m_blocks[block] = BlockState.MessageShown;
             }
             m_blocksHelper.Clear();
@@ -83,7 +86,7 @@ namespace Sandbox.Game.World.Triggers
             }
             if (!isSomethingAlive)
                 m_IsTrue = true;
-            if (m_blocksHelper.Count()>0)
+            if (m_blocksHelper.Count>0)
             {
                 foreach(var block in m_blocksHelper)
                     m_blocks[block] = BlockState.Destroyed;
@@ -98,7 +101,7 @@ namespace Sandbox.Game.World.Triggers
             m_progress.Clear().Append(MyTexts.Get(MySpaceTexts.ScenarioProgressDestroyBlocks));
             foreach (var block in m_blocks)
                 if (block.Value == BlockState.Ok)
-                    m_progress.Append(Environment.NewLine).Append("   ").Append(block.Key.CustomName);
+                    m_progress.Append(MyEnvironment.NewLine).Append("   ").Append(block.Key.CustomName);
             return m_progress;
         }
 

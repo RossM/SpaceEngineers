@@ -18,11 +18,11 @@ namespace Sandbox.Game.Components
             m_motor = motor;
         }
 
-        public override bool DebugDraw()
+        public override void DebugDraw()
         {
-            if (MySession.ControlledEntity != null)
+            if (MySession.Static.ControlledEntity != null)
             {
-                var m = MySession.ControlledEntity.Entity.WorldMatrix;
+                var m = MySession.Static.ControlledEntity.Entity.WorldMatrix;
                 VRageRender.MyRenderProxy.DebugDrawLine3D(m.Translation, m.Translation + m.Forward * 2, Color.Red, Color.Yellow, false);
 
             }
@@ -31,7 +31,6 @@ namespace Sandbox.Game.Components
             VRageRender.MyRenderProxy.DebugDrawLine3D(WorldMatrix.Translation, WorldMatrix.Translation + WorldMatrix.Right * 2, Color.Red, Color.Yellow, false);
             VRageRender.MyRenderProxy.DebugDrawLine3D(WorldMatrix.Translation, WorldMatrix.Translation + WorldMatrix.Up * 2, Color.Blue, Color.Yellow, false);
             VRageRender.MyRenderProxy.DebugDrawLine3D(WorldMatrix.Translation, WorldMatrix.Translation + WorldMatrix.Forward * 2, Color.Green, Color.Yellow, false);
-            return true;
         } 
     }
 }

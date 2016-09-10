@@ -18,6 +18,8 @@ namespace VRageRender
         RenderProfiler,
 
         CreateRenderEntity,
+        CreateRenderEntityAtmosphere,
+        CreateRenderEntityClouds,
         AddRuntimeModel,
         PreloadModel,
         PreloadMaterials,
@@ -25,7 +27,8 @@ namespace VRageRender
         SetRenderEntityLOD,
         CreateRenderBatch,
         CreateRenderInstanceBuffer,
-        UpdateRenderInstanceBuffer,
+        UpdateRenderInstanceBufferSettings,
+        UpdateRenderInstanceBufferRange,
         UpdateRenderCubeInstanceBuffer,
         SetInstanceBuffer,
         CreateManualCullObject,
@@ -39,6 +42,7 @@ namespace VRageRender
         RemoveRenderObject,
         UseCustomDrawMatrix,
         UpdateModelProperties,
+        UpdateModelHighlight,
         UpdateColorEmissivity,
         UpdateVoxelMaterialsProperties,
         ChangeModel,
@@ -50,6 +54,7 @@ namespace VRageRender
         DrawTextToMaterial,
         ReleaseRenderTexture,
 
+        UpdateGameplayFrame,
 
         CreateClipmap,
         RequireClipmapCell, //Output
@@ -58,11 +63,21 @@ namespace VRageRender
         InvalidateClipmapRange,
         ClipmapsReady, // Output
 
+        UpdateMergedVoxelMesh,
+        MergeVoxelMeshes,   // Output
+        CancelVoxelMeshMerge,   // Output
+        ResetMergedVoxels,
+
         CreateRenderVoxelMaterials,
         UpdateRenderVoxelMaterials,
         CreateRenderVoxelDebris,
 
         RebuildCullingStructure,
+
+        CreateGPUEmitter,
+        UpdateGPUEmitters,
+        UpdateGPUEmittersTransform,
+        RemoveGPUEmitter,
 
         CreateRenderLight,
         UpdateRenderLight,
@@ -86,6 +101,10 @@ namespace VRageRender
         UpdateColorMappingSettings,
         UpdateContrastSettings,
         UpdateChromaticAberrationSettings,
+        UpdateAtmosphereSettings,
+        UpdatePlanetBlurSettings,
+        EnableAtmosphere,
+        UpdateCloudLayerFogFlag,
 
         PlayVideo,
         UpdateVideo,
@@ -96,10 +115,14 @@ namespace VRageRender
         DrawSecondaryCamera,
         DrawSecondaryCameraSprite,
 
-        CreateDecal,
+        CreateDecal, // Deprecate
+
         CreateScreenDecal,
+        UpdateScreenDecal,
         RemoveDecal,
+        SetDecalGlobals,
         RegisterDecalsMaterials,
+        ClearDecals,
         HideDecals,
 
         UpdateCockpitGlass,
@@ -114,9 +137,14 @@ namespace VRageRender
         SetTextureIgnoreQuality,
         UpdateRenderQuality,
 
+        RequestScreenData,
+        ScreenDataReady,    // Output
+
         TakeScreenshot,
         ScreenshotTaken, //Output
         ExportToObjComplete, //Output
+
+        Error, //Output
 
         CreateRenderCharacter,
         SetCharacterSkeleton,
@@ -124,6 +152,7 @@ namespace VRageRender
         //UpdateCharacterAnimation,
         SetCharacterTransforms,
 
+        /* Debug Draw Messages */
         DebugDrawLine3D,
         DebugDrawLine2D,
         DebugDrawPoint,
@@ -131,6 +160,7 @@ namespace VRageRender
         DebugDrawAABB,
         DebugDrawAxis,
         DebugDrawOBB,
+        DebugDrawFrustrum,
         DebugDrawTriangle,
         DebugDrawCapsule,
         DebugDrawText2D,
@@ -141,6 +171,12 @@ namespace VRageRender
         DebugDrawPlane,
         DebugDrawCylinder,
         DebugDrawCone,
+        DebugDrawMesh,
+        DebugDraw6FaceConvex,
+        DebugWaitForPresent,
+        DebugClearPersistentMessages,
+
+        UpdateDebugOverrides,
 
         UnloadData,
 
@@ -160,5 +196,7 @@ namespace VRageRender
         CreatedDeviceSettings, // Output
         SwitchDeviceSettings,
         SwitchRenderSettings,
+
+        SetMouseCapture
     }
 }

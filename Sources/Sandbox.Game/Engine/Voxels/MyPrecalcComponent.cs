@@ -5,12 +5,16 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
+using ParallelTasks;
 using VRage;
 using VRage.Collections;
+using VRage.Game.Components;
 using VRage.Generics;
 using VRage.Library.Collections;
 using VRage.Utils;
+using VRage.Voxels;
 using VRageMath;
+using VRage.Library;
 using IPrioritizedWork = ParallelTasks.IPrioritizedWork;
 using IWork = ParallelTasks.IWork;
 using Parallel = ParallelTasks.Parallel;
@@ -62,12 +66,9 @@ namespace Sandbox.Engine.Voxels
 
         private static readonly List<List<JobCancelCommand>> CommandBuffers = new List<List<JobCancelCommand>>();
 
-        private static readonly MyConcurrentDeque<MyPrecalcJob> m_highPriorityJobs = new MyConcurrentDeque<MyPrecalcJob>();
-        private static readonly MyConcurrentDeque<MyPrecalcJob> m_lowPriorityJobs = new MyConcurrentDeque<MyPrecalcJob>();
         private static readonly MyConcurrentSortableQueue<MyPrecalcJob> m_sortedJobs = new MyConcurrentSortableQueue<MyPrecalcJob>();
         private static readonly List<MyPrecalcJob> m_addedJobs = new List<MyPrecalcJob>();
-        private static readonly MyDynamicObjectPool<Work> m_workPool = new MyDynamicObjectPool<Work>(1);
-        private static int m_worksInUse;
+        private static MyDynamicObjectPool<Work> m_workPool;
         private static MyPrecalcComponent m_instance;
 
         internal static readonly HashSet<MyVoxelPhysicsBody> PhysicsWithInvalidCells = new HashSet<MyVoxelPhysicsBody>();
@@ -82,28 +83,28 @@ namespace Sandbox.Engine.Voxels
             get { return IsoMesher.InvalidatedRangeInflate; }
         }
 
-        public static void EnqueueBack(MyPrecalcJob job, bool isHighPriority)
+        public static void EnqueueBack(MyPrecalcJob job)
         {
-            if(MyFakes.PRIORITIZE_PRECALC_JOBS)
+            if (MyFakes.PRIORITIZE_PRECALC_JOBS)
             {
                 ProfilerShort.Begin("SortedJobs.Add");
                 m_addedJobs.Add(job);
                 ProfilerShort.End();
                 return;
             }
-            if (isHighPriority)
-                m_highPriorityJobs.EnqueueBack(job);
-            else
-                m_lowPriorityJobs.EnqueueBack(job);
         }
 
-        internal static void QueueJobCancel(MyWorkTracker<Vector3I, MyPrecalcJobPhysicsPrefetch> tracker, Vector3I id)
+        internal static void QueueJobCancel(MyWorkTracker<MyCellCoord, MyPrecalcJobPhysicsPrefetch> tracker, MyCellCoord id)
         {
-            ThreadCommandBuffer.Add(new JobCancelCommand
+            var threadCommandBuffer = ThreadCommandBuffer;
+            lock (threadCommandBuffer)
             {
-                Tracker = tracker,
-                Id = id,
-            });
+                ThreadCommandBuffer.Add(new JobCancelCommand
+                {
+                    Tracker = tracker,
+                    Id = id,
+                });
+            }
         }
 
         [Conditional("DEBUG")]
@@ -116,7 +117,7 @@ namespace Sandbox.Engine.Voxels
         {
             m_instance = this;
 
-            if (Environment.ProcessorCount <= 2)
+            if (MyEnvironment.ProcessorCount <= 2)
             { // throttle down precalc on worker threads when it could hurt Update and Render thread.
                 MyFakes.MAX_PRECALC_TIME_IN_MILLIS = 6f;
             }
@@ -125,6 +126,7 @@ namespace Sandbox.Engine.Voxels
                 MyFakes.MAX_PRECALC_TIME_IN_MILLIS = 14f;
             }
 
+            m_workPool = new MyDynamicObjectPool<Work>(Parallel.Scheduler.ThreadCount);
         }
 
         public override bool UpdatedBeforeInit()
@@ -151,7 +153,7 @@ namespace Sandbox.Engine.Voxels
             m_sortedJobs.Unlock();
             m_addedJobs.Clear();
             m_counter++;
-            if (m_counter % 60 == 0)
+            if (m_counter % 30 == 0)
             {
                 SortJobs();
                 //m_sortedJobs.Sort(m_comparer);
@@ -174,59 +176,18 @@ namespace Sandbox.Engine.Voxels
                         job.DebugDraw(new Color((shade - p) / shade, 0.0f, p / shade, (max - xi) / max));
                     }
                 }
-                catch(Exception e)
+                catch (Exception e)
                 { }
             }
 
-            if (m_sortedJobs.Count > 0 && m_worksInUse < 2 * Parallel.Scheduler.ThreadCount)
-            { // no upper bound on these, as there should be just a few high priority jobs
-                for (int i = 0; i < Parallel.Scheduler.ThreadCount; ++i)
+            if (m_sortedJobs.Count > 0)
+            {
+                while (m_workPool.Count > 0)
                 {
                     var work = m_workPool.Allocate();
                     work.Queue = m_sortedJobs;
                     work.Priority = WorkPriority.Low;
                     work.MaxPrecalcTime = (long)MyFakes.MAX_PRECALC_TIME_IN_MILLIS;
-                    ++m_worksInUse;
-
-                    if (MULTITHREADED)
-                        Parallel.Start(work, work.CompletionCallback);
-                    else
-                    {
-                        ((IWork)work).DoWork();
-                        work.CompletionCallback();
-                    }
-                }
-            }
-
-            if (m_highPriorityJobs.Count > 0)
-            { // no upper bound on these, as there should be just a few high priority jobs
-                for (int i = 0; i < Parallel.Scheduler.ThreadCount; ++i)
-                {
-                    var work = m_workPool.Allocate();
-                    work.Queue = m_highPriorityJobs;
-                    work.Priority = WorkPriority.Low;
-                    work.MaxPrecalcTime = (long)MyFakes.MAX_PRECALC_TIME_IN_MILLIS;
-                    ++m_worksInUse;
-                    
-                    if (MULTITHREADED)
-                        Parallel.Start(work, work.CompletionCallback);
-                    else
-                    {
-                        ((IWork)work).DoWork();
-                        work.CompletionCallback();
-                    }
-                }
-            }
-
-            if (m_lowPriorityJobs.Count > 0 && m_worksInUse < 2 * Parallel.Scheduler.ThreadCount)
-            {
-                for (int i = 0; i < Parallel.Scheduler.ThreadCount; ++i)
-                {
-                    var work = m_workPool.Allocate();
-                    work.Queue = m_lowPriorityJobs;
-                    work.Priority = WorkPriority.VeryLow;
-                    work.MaxPrecalcTime = (long)MyFakes.MAX_PRECALC_TIME_IN_MILLIS;
-                    ++m_worksInUse;
 
                     if (MULTITHREADED)
                         Parallel.Start(work, work.CompletionCallback);
@@ -240,22 +201,16 @@ namespace Sandbox.Engine.Voxels
 
             foreach (var physics in PhysicsWithInvalidCells)
             {
-                MyPrecalcJobPhysicsBatch.Start(physics, ref physics.InvalidCells);
+                for (int lod = 0; lod < physics.InvalidCells.Length; lod++)
+                {
+                    if (physics.InvalidCells[lod].Count > 0 && physics.RunningBatchTask[lod] == null)
+                        MyPrecalcJobPhysicsBatch.Start(physics, ref physics.InvalidCells[lod], lod);
+                }
             }
             PhysicsWithInvalidCells.Clear();
 
             Stats.Generic.Write("Precalc jobs in sorted", m_sortedJobs.Count, VRage.Stats.MyStatTypeEnum.CurrentValue, 100, 0);
-            Stats.Generic.Write("Precalc jobs in queue (low)", m_lowPriorityJobs.Count, VRage.Stats.MyStatTypeEnum.CurrentValue, 100, 0);
-            Stats.Generic.Write("Precalc jobs in queue (high)", m_highPriorityJobs.Count, VRage.Stats.MyStatTypeEnum.CurrentValue, 100, 0);
-
-            if (!MySandboxGame.IsGameReady)
-            {
-                var work = m_workPool.Allocate();
-                work.Queue = m_lowPriorityJobs;
-                work.MaxPrecalcTime = (long)MyFakes.MAX_PRECALC_TIME_IN_MILLIS;
-                (work as IWork).DoWork();
-                work.CompletionCallback();
-            }
+            Stats.Generic.Write("Clipmap triangle cache", MyClipmap.CellsCache.Usage, VRage.Stats.MyStatTypeEnum.CurrentValue, 100, 2);
 
             base.UpdateAfterSimulation();
         }
@@ -265,52 +220,55 @@ namespace Sandbox.Engine.Voxels
             ProfilerShort.Begin("SortJobs");
             m_sortedJobs.Lock();
             var list = m_sortedJobs.List;
-            int front = 0;
-            int mid = 0;
-            int back = list.Count - 1;
+            //int front = 0;
+            //int mid = 1;
+            //int back = list.Count - 1;
 
-            ProfilerShort.Begin("FirstPAss");
+            //ProfilerShort.Begin("FirstPAss");
             //for (int i = 0; i <= back; i++)
             //{
             //    var p = list[i].Priority;
             //    if (p == int.MaxValue)
             //        list.Swap(i, back--);
             //}
-            ProfilerShort.BeginNextBlock("SecondPass");
+            //ProfilerShort.BeginNextBlock("SecondPass");
 
-            int rnd = 0;
-            int min = int.MaxValue;
-            float avg = 0;
-            if (list.Count > 100) 
-            for (int i = 0; i < 100; i++ )
-            {
-                int x = VRage.Library.Utils.MyRandom.Instance.Next() % back;
-                var p = list[x].Priority;
-                if (p > 1 && p < min)
-                    min = p;
-            }
-            //avg *= 0.1f;
-            min += 100;
-            min = Math.Max(1, min);
-            for (int i = 0; i < list.Count; i++ )
-            {
-                if(list[i].IsCanceled)
-                {
-                    list.RemoveAtFast(i--);
-                    continue;
-                }
-                var p = list[i].Priority;
-                if (p <= min)
-                {
-                    if (p <= 1)
-                        list.Swap(i, front++);
-                    list.Swap(i, mid++);
-                }
-            }
-            ProfilerShort.BeginNextBlock("Sort");
-            if (mid < list.Count)
-                list.Sort(front, mid-front, m_comparer);
-            ProfilerShort.End(mid-front);
+            //int min = int.MaxValue;
+            //if (list.Count > 100) 
+            //for (int i = 0; i < 100; i++ )
+            //{
+            //    int x = VRage.Library.Utils.MyRandom.Instance.Next() % back;
+            //    var p = list[x].Priority;
+            //    if (p > 1 && p < min)
+            //        min = p;
+            //}
+            ////avg *= 0.1f;
+            //min += 100;
+            //min = Math.Max(1, min);
+            //for (int i = 0; i < list.Count; i++ )
+            //{
+            //    if (mid == list.Count)
+            //        break;
+            //    if(list[i].IsCanceled)
+            //    {
+            //        list.RemoveAtFast(i--);
+            //        continue;
+            //    }
+            //    var p = list[i].Priority;
+            //    if (p <= min)
+            //    {
+            //        if (p <= 1)
+            //        {
+            //            list.Swap(i, front++);
+            //        }
+            //        list.Swap(i, mid++);
+            //    }
+            //}
+            ProfilerShort.Begin("Sort");
+            //if (mid < list.Count)
+            list.Sort(m_comparer);
+            ProfilerShort.End();
+
             m_sortedJobs.Unlock();
             ProfilerShort.End();
         }
@@ -320,20 +278,23 @@ namespace Sandbox.Engine.Voxels
             base.UpdateAfterSimulation();
 
             // Applying all buffered commands that have been collected from threads during simulation step.
-            foreach (var threadCommandBuffer in CommandBuffers)
+            lock (CommandBuffers)
             {
-                foreach (var cancelCommand in threadCommandBuffer)
+                foreach (var threadCommandBuffer in CommandBuffers)
                 {
-                    cancelCommand.Tracker.Cancel(cancelCommand.Id);
+                    lock (threadCommandBuffer)
+                    {
+                        foreach (var cancelCommand in threadCommandBuffer)
+                            cancelCommand.Tracker.Cancel(cancelCommand.Id);
+
+                        threadCommandBuffer.Clear();
+                    }
                 }
-                threadCommandBuffer.Clear();
             }
         }
 
         protected override void UnloadData()
         {
-            m_highPriorityJobs.Clear();
-            m_lowPriorityJobs.Clear();
             m_instance = null;
         }
 
@@ -362,7 +323,6 @@ namespace Sandbox.Engine.Voxels
                 Queue = null;
                 m_finishedList.Clear();
                 m_workPool.Deallocate(this);
-                --m_worksInUse;
             }
 
             public WorkPriority Priority
@@ -371,9 +331,8 @@ namespace Sandbox.Engine.Voxels
                 set { m_workPriority = value; }
             }
 
-            void IWork.DoWork()
+            void IWork.DoWork(ParallelTasks.WorkData workData = null)
             {
-                ProfilerShort.Begin("MyPrecalcWork");
                 m_timer.Start();
                 MyPrecalcJob work;
                 while (Queue.TryDequeueFront(out work))
@@ -383,7 +342,15 @@ namespace Sandbox.Engine.Voxels
                         m_finishedList.Add(work);
                         continue;
                     }
-                    work.DoWork();
+                    try
+                    {
+                        ProfilerShort.Begin("MyPrecalcWork");
+                        work.DoWork();
+                    }
+                    finally
+                    {
+                        ProfilerShort.End();
+                    }
                     m_finishedList.Add(work);
                     if (m_timer.ElapsedMilliseconds >= MaxPrecalcTime)
                         break;
@@ -393,7 +360,6 @@ namespace Sandbox.Engine.Voxels
 
                 m_timer.Stop();
                 m_timer.Reset();
-                ProfilerShort.End();
             }
 
             WorkOptions IWork.Options
@@ -404,9 +370,10 @@ namespace Sandbox.Engine.Voxels
 
         struct JobCancelCommand
         {
-            public MyWorkTracker<Vector3I, MyPrecalcJobPhysicsPrefetch> Tracker;
-            public Vector3I Id;
+            public MyWorkTracker<MyCellCoord, MyPrecalcJobPhysicsPrefetch> Tracker;
+            public MyCellCoord Id;
         }
+
 
     }
 

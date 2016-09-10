@@ -9,6 +9,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using VRage;
+using VRage.Game;
 using VRage.Utils;
 using VRageMath;
 using VRageRender;
@@ -107,10 +108,13 @@ namespace Sandbox.Game.Gui
 
         public void GetSettings(MyObjectBuilder_SessionSettings output)
         {
+            output.FloraDensity = GetFloraDensity();
+            output.EnableFlora = output.FloraDensity > 0;
         }
 
         protected virtual void SetSettingsToControls()
         {
+            m_floraDensityCombo.SelectItemByKey((int)FloraDensityEnumKey(m_parent.Settings.FloraDensity));
             AsteroidAmount = m_parent.AsteroidAmount;
         }
 
@@ -129,21 +133,44 @@ namespace Sandbox.Game.Gui
 
             m_asteroidAmountCombo.AddItem((int)AsteroidAmountEnum.Normal, MySpaceTexts.WorldSettings_AsteroidAmountNormal);
             m_asteroidAmountCombo.AddItem((int)AsteroidAmountEnum.More, MySpaceTexts.WorldSettings_AsteroidAmountLarge);
+#if XB1
+            m_asteroidAmountCombo.AddItem((int)AsteroidAmountEnum.Many, MySpaceTexts.WorldSettings_AsteroidAmountExtreme);
+#else // !XB1
             if (Environment.Is64BitProcess)
                 m_asteroidAmountCombo.AddItem((int)AsteroidAmountEnum.Many, MySpaceTexts.WorldSettings_AsteroidAmountExtreme);
+#endif // !XB1
 
             if (MyFakes.ENABLE_ASTEROID_FIELDS)
             {
                 m_asteroidAmountCombo.AddItem((int)AsteroidAmountEnum.ProceduralLow, MySpaceTexts.WorldSettings_AsteroidAmountProceduralLow);
                 m_asteroidAmountCombo.AddItem((int)AsteroidAmountEnum.ProceduralNormal, MySpaceTexts.WorldSettings_AsteroidAmountProceduralNormal);
+#if XB1
+                m_asteroidAmountCombo.AddItem((int)AsteroidAmountEnum.ProceduralHigh, MySpaceTexts.WorldSettings_AsteroidAmountProceduralHigh);
+#else // !XB1
                 if (Environment.Is64BitProcess)
                     m_asteroidAmountCombo.AddItem((int)AsteroidAmountEnum.ProceduralHigh, MySpaceTexts.WorldSettings_AsteroidAmountProceduralHigh);
+#endif // !XB1
             }
 
             m_asteroidAmountLabel = MakeLabel(MySpaceTexts.Asteroid_Amount);
             Controls.Add(m_asteroidAmountLabel);
             Controls.Add(m_asteroidAmountCombo);
 
+
+            m_floraDensityLabel = MakeLabel(MySpaceTexts.WorldSettings_FloraDensity);
+            m_floraDensityCombo = new MyGuiControlCombobox(size: new Vector2(width, 0.04f));
+
+            m_floraDensityCombo.AddItem((int)MyFloraDensityEnum.NONE, MySpaceTexts.WorldSettings_FloraDensity_None);
+            m_floraDensityCombo.AddItem((int)MyFloraDensityEnum.LOW, MySpaceTexts.WorldSettings_FloraDensity_Low);
+            m_floraDensityCombo.AddItem((int)MyFloraDensityEnum.MEDIUM, MySpaceTexts.WorldSettings_FloraDensity_Medium);
+            m_floraDensityCombo.AddItem((int)MyFloraDensityEnum.HIGH, MySpaceTexts.WorldSettings_FloraDensity_High);
+            m_floraDensityCombo.AddItem((int)MyFloraDensityEnum.EXTREME, MySpaceTexts.WorldSettings_FloraDensity_Extreme);
+
+            m_floraDensityCombo.SetToolTip(MyTexts.GetString(MySpaceTexts.ToolTipWorldSettings_FloraDensity));
+
+            Controls.Add(m_floraDensityLabel);
+            Controls.Add(m_floraDensityCombo);
+            
             int numControls = 0;
             float MARGIN_TOP = 0.12f;
             float MARGIN_LEFT = 0.055f;
@@ -166,8 +193,8 @@ namespace Sandbox.Game.Gui
 
 
             Vector2 buttonsOrigin = m_size.Value / 2 - new Vector2(0.23f, 0.03f);
-            m_okButton = new MyGuiControlButton(position: buttonsOrigin - new Vector2(0.01f, 0f), size: MyGuiConstants.BACK_BUTTON_SIZE, text: MyTexts.Get(MySpaceTexts.Ok), onButtonClick: OkButtonClicked, originAlign: MyGuiDrawAlignEnum.HORISONTAL_RIGHT_AND_VERTICAL_BOTTOM);
-            m_cancelButton = new MyGuiControlButton(position: buttonsOrigin + new Vector2(0.01f, 0f), size: MyGuiConstants.BACK_BUTTON_SIZE, text: MyTexts.Get(MySpaceTexts.Cancel), onButtonClick: CancelButtonClicked, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_BOTTOM);
+            m_okButton = new MyGuiControlButton(position: buttonsOrigin - new Vector2(0.01f, 0f), size: MyGuiConstants.BACK_BUTTON_SIZE, text: MyTexts.Get(MyCommonTexts.Ok), onButtonClick: OkButtonClicked, originAlign: MyGuiDrawAlignEnum.HORISONTAL_RIGHT_AND_VERTICAL_BOTTOM);
+            m_cancelButton = new MyGuiControlButton(position: buttonsOrigin + new Vector2(0.01f, 0f), size: MyGuiConstants.BACK_BUTTON_SIZE, text: MyTexts.Get(MyCommonTexts.Cancel), onButtonClick: CancelButtonClicked, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_BOTTOM);
 
         
             Controls.Add(m_okButton);
@@ -189,6 +216,21 @@ namespace Sandbox.Game.Gui
         private MyGuiControlLabel MakeLabel(MyStringId textEnum)
         {
             return new MyGuiControlLabel(text: MyTexts.GetString(textEnum), originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER);
+        }
+
+        public int GetFloraDensity()
+        {
+            return (int)m_floraDensityCombo.GetSelectedKey();
+        }
+
+        private MyFloraDensityEnum FloraDensityEnumKey(int floraDensity)
+        {
+            var value = (MyFloraDensityEnum)floraDensity;
+            if (Enum.IsDefined(typeof(MyFloraDensityEnum), value))
+            {
+                return (MyFloraDensityEnum)floraDensity;
+            }
+            return MyFloraDensityEnum.LOW;
         }
 
         private void CancelButtonClicked(object sender)

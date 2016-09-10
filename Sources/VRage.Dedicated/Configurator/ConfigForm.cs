@@ -4,7 +4,6 @@ using Sandbox.Game.Gui;
 using Sandbox.Definitions;
 using Sandbox.Engine.Networking;
 using Sandbox;
-using Sandbox.Common.ObjectBuilders;
 using System.Reflection;
 using System.Diagnostics;
 using System.ServiceProcess;
@@ -19,13 +18,14 @@ using Sandbox.Game;
 using System.ComponentModel.DataAnnotations;
 using Sandbox.Game.Screens.Helpers;
 using System.IO;
+using VRage.Game;
 
 namespace VRage.Dedicated
 {
     public partial class ConfigForm<T> : Form where T : MyObjectBuilder_SessionSettings, new()
     {
         public static Action OnReset;
-        public static Sandbox.Common.ObjectBuilders.Game GameAttributes;
+        public static Game.Game GameAttributes;
         public static System.Drawing.Image LogoImage;
 
         IMyAsyncResult m_loadWorldsAsync;
@@ -38,6 +38,9 @@ namespace VRage.Dedicated
 
         bool m_isService;
         string m_serviceName;
+
+        bool m_isEnvironmentHostilityChanged = false;
+        ComboBox m_cbbEnvironmentHostility = null;
 
         ServiceController m_serviceController;
 
@@ -57,6 +60,34 @@ namespace VRage.Dedicated
             this.logoPictureBox.Image = LogoImage;
         }
 
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            const int WM_KEYDOWN = 0x100;
+            var keyCode = (Keys)(msg.WParam.ToInt32() &
+                                  Convert.ToInt32(Keys.KeyCode));
+            if ((msg.Msg == WM_KEYDOWN && keyCode == Keys.A)
+                && (ModifierKeys == Keys.Control))
+            {
+                if (adminIDs.Focused)
+                    adminIDs.SelectAll();
+                if (bannedIDs.Focused)
+                    bannedIDs.SelectAll();
+                if (modIdsTextBox.Focused)
+                    modIdsTextBox.SelectAll();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        private void scenarioCB_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (!m_isEnvironmentHostilityChanged)
+            {
+                m_cbbEnvironmentHostility.SelectedItem = ((ScenarioItem)scenarioCB.SelectedItem).Definition.DefaultEnvironment;
+                m_isEnvironmentHostilityChanged = false;
+            }
+        }
+
         private void exitButton_Click(object sender, EventArgs e)
         {
             Close();
@@ -64,6 +95,11 @@ namespace VRage.Dedicated
 
         private void startButton_Click(object sender, EventArgs e)
         {
+            if (m_selectedSessionSettings == null)
+            {
+                return;
+            }
+
             if (MyFakes.ENABLE_BATTLE_SYSTEM && battleButton.Checked && m_selectedSessionSettings != null)
                 MyBattleHelper.FillDefaultBattleServerSettings(m_selectedSessionSettings, true);
 
@@ -71,6 +107,10 @@ namespace VRage.Dedicated
 
             if (m_isService) // Service
             {
+                RefreshWorldsList();
+                if ( startGameButton.Checked )
+                    // fix for new game selected - new game will be started and not last saved game instead
+                    MyLocalCache.SaveLastSessionInfo("");
                 startService();
             }
             else // Local / Console
@@ -117,8 +157,8 @@ namespace VRage.Dedicated
                 updateServiceStatus();
             }
 
-            m_loadWorldsAsync = new MyLoadWorldInfoListResult();
-            worldListTimer.Enabled = true;
+            
+            RefreshWorldsList();
 
             if (MyFakes.ENABLE_BATTLE_SYSTEM && MyPerGameSettings.Game == GameEnum.ME_GAME)
             {
@@ -135,6 +175,12 @@ namespace VRage.Dedicated
             MySandboxGame.ConfigDedicated.Load();
 
             UpdateLoadedData();
+        }
+
+        public void RefreshWorldsList()
+        {
+            m_loadWorldsAsync = new MyLoadWorldInfoListResult();
+            worldListTimer.Enabled = true;
         }
 
         void UpdateLoadedData()
@@ -160,7 +206,7 @@ namespace VRage.Dedicated
 
             foreach (var scenario in MyDefinitionManager.Static.GetScenarioDefinitions())
             {
-                if (scenario.Public)
+                if (scenario.Public || !MyFinalBuildConstants.IS_OFFICIAL)
                 {
                     ScenarioItem item = new ScenarioItem() { Definition = scenario };
                     scenarioCB.Items.Add(item);
@@ -192,7 +238,11 @@ namespace VRage.Dedicated
 
             availableSaves.Sort((x, y) =>
             {
-                return x.Item1.CompareTo(y.Item1);
+                int result = y.Item2.LastSaveTime.CompareTo(x.Item2.LastSaveTime);
+                if (result != 0) return result;
+
+                result = x.Item1.CompareTo(y.Item1);
+                return result;
             });
 
             gamesListBox.Items.Clear();
@@ -213,7 +263,7 @@ namespace VRage.Dedicated
                 }
             }
 
-            gamesListBox.Sorted = true;
+            gamesListBox.Sorted = false;
         }
 
         void FillBattlesList()
@@ -263,6 +313,17 @@ namespace VRage.Dedicated
                     string officialBattleMaps = Path.Combine(MyFileSystem.ContentPath, "CastleSiege");
                     m_loadBattlesAsync = new MyBattleLoadListResult(officialBattleMaps, null);
                     battleListTimer.Enabled = true;
+                }
+
+                // Selects the value for EnvironmentHostility combobox according to the setting of the selected scenario
+                if (MyPerGameSettings.Game == GameEnum.SE_GAME && startGameButton.Checked)
+                {
+                    m_cbbEnvironmentHostility = tableLayoutPanel1.Controls.Find("EnvironmentHostility", true)[0] as ComboBox;
+                    m_cbbEnvironmentHostility.SelectedItem = (scenarioCB.SelectedItem == null) ? MyEnvironmentHostilityEnum.NORMAL : ((ScenarioItem)scenarioCB.SelectedItem).Definition.DefaultEnvironment;
+                    scenarioCB.SelectedIndexChanged += scenarioCB_SelectedIndexChanged;
+                    // this variable was changed to true with the code above
+                    m_isEnvironmentHostilityChanged = false;
+
                 }
             }
         }
@@ -389,10 +450,13 @@ namespace VRage.Dedicated
                     //enable tool shake needs to be true for new world, but false for old saved worlds.                                
                     m_selectedSessionSettings.EnableToolShake = true;
 
+                    m_selectedSessionSettings.EnableFlora = (MyPerGameSettings.Game == GameEnum.SE_GAME) && MyFakes.ENABLE_PLANETS;
                     m_selectedSessionSettings.EnableSunRotation = MyPerGameSettings.Game == GameEnum.SE_GAME;
                     m_selectedSessionSettings.CargoShipsEnabled = true;
+                    m_selectedSessionSettings.EnableCyberhounds = false;
+                    m_selectedSessionSettings.EnableSpiders = true;
 
-                    m_selectedSessionSettings.Battle = false;
+                    m_selectedSessionSettings.Battle = false;                    
                 }
             }
 
@@ -439,7 +503,7 @@ namespace VRage.Dedicated
                 if (gameAttr.Length > 0)
                 {
                     var gameRel = ((GameRelationAttribute)gameAttr[0]).RelatedTo;
-                    if (gameRel != Sandbox.Common.ObjectBuilders.Game.Shared && gameRel != GameAttributes)
+                    if (gameRel != Game.Game.Shared && gameRel != GameAttributes)
                         continue;
                 }
 
@@ -585,24 +649,34 @@ namespace VRage.Dedicated
             }
             EnableCopyPaste(null);
             EnableOxygen(loadFromConfig);
+
+            if (MyPerGameSettings.Game == GameEnum.SE_GAME && startGameButton.Checked)
+            {
+                // Assigns the variable m_cbbEnvironmentHostility
+                m_cbbEnvironmentHostility = tableLayoutPanel1.Controls.Find("EnvironmentHostility", true)[0] as ComboBox;
+                m_cbbEnvironmentHostility.SelectedItem = (scenarioCB.SelectedItem == null) ? MyEnvironmentHostilityEnum.NORMAL : ((ScenarioItem)scenarioCB.SelectedItem).Definition.DefaultEnvironment;
+                scenarioCB.SelectedIndexChanged += scenarioCB_SelectedIndexChanged;
+                // this variable was changed to true with the code above
+                m_isEnvironmentHostilityChanged = false; 
+            }
         }
 
         void EnableCopyPaste(ComboBox sender)
         {
-            var enabled = false;
+            var isCreative = false;
 
             if (sender != null)
-                enabled = sender.SelectedIndex == 0;
+                isCreative = sender.SelectedIndex == 0;
             else
-                enabled = (tableLayoutPanel1.Controls.Find("GameMode", true)[0] as ComboBox).SelectedIndex == 0;
+                isCreative = (tableLayoutPanel1.Controls.Find("GameMode", true)[0] as ComboBox).SelectedIndex == 0;
 
             var checkLabel = tableLayoutPanel1.Controls.Find("EnableCopyPasteLabel", true);
             var checkBox = tableLayoutPanel1.Controls.Find("EnableCopyPaste", true)[0] as CheckBox;
 
-            checkBox.Enabled = enabled;
-            checkBox.Checked = enabled;
-            checkLabel[0].Enabled = enabled;
-            m_selectedSessionSettings.EnableCopyPaste = enabled;
+            checkBox.Enabled = isCreative;
+            checkBox.Checked = isCreative;
+            checkLabel[0].Enabled = isCreative;
+            m_selectedSessionSettings.EnableCopyPaste = isCreative;
 
             checkLabel = tableLayoutPanel1.Controls.Find("PermanentDeathLabel", true);
             var foundControls = tableLayoutPanel1.Controls.Find("PermanentDeath", true);
@@ -610,10 +684,18 @@ namespace VRage.Dedicated
             if (foundControls.Length > 0)
             {
                 checkBox = foundControls[0] as CheckBox;
-                checkBox.Enabled = !enabled;
-                checkBox.Checked = !enabled;
-                checkLabel[0].Enabled = !enabled;
-                m_selectedSessionSettings.PermanentDeath &= !enabled;
+                checkLabel[0].Enabled = !isCreative;
+                checkBox.Enabled = !isCreative;
+
+                if (isCreative)
+                {
+                    checkBox.Checked = false;
+                    m_selectedSessionSettings.PermanentDeath = false;
+                }
+            }
+            else
+            {
+                m_selectedSessionSettings.PermanentDeath = false;
             }
         }
 
@@ -659,23 +741,28 @@ namespace VRage.Dedicated
         void combo_SelectedIndexChanged(object sender, EventArgs e)
         {
             ComboBox cb = (ComboBox)sender;
+            if (MyPerGameSettings.Game == GameEnum.SE_GAME && cb.Name == "EnvironmentHostility")
+                m_isEnvironmentHostilityChanged = true;
+
             FieldInfo fieldInfo = (FieldInfo)cb.Tag;
             fieldInfo.SetValue(m_selectedSessionSettings, cb.SelectedItem);
 
-            if ((sender as ComboBox).Name == "GameMode")
-                EnableCopyPaste(sender as ComboBox);
+            if (cb.Name == "GameMode")
+                EnableCopyPaste(cb);
         }
 
         void nup_ValueChanged4(object sender, EventArgs e)
         {
             FieldInfo fieldInfo = (FieldInfo)((NumericUpDown)sender).Tag;
-            fieldInfo.SetValue(m_selectedSessionSettings, (uint)((NumericUpDown)sender).Value);
+            Decimal value = Math.Min(((NumericUpDown)sender).Value, (Decimal)uint.MaxValue);
+            fieldInfo.SetValue(m_selectedSessionSettings, (uint)value);
         }
 
         void nup_ValueChanged3(object sender, EventArgs e)
         {
             FieldInfo fieldInfo = (FieldInfo)((NumericUpDown)sender).Tag;
-            fieldInfo.SetValue(m_selectedSessionSettings, (int)((NumericUpDown)sender).Value);
+            Decimal value = Math.Min(((NumericUpDown)sender).Value, (Decimal)int.MaxValue);
+            fieldInfo.SetValue(m_selectedSessionSettings, (int)value);
         }
 
         void nup_ValueChanged2(object sender, EventArgs e)
@@ -687,7 +774,8 @@ namespace VRage.Dedicated
         void nup_ValueChanged(object sender, EventArgs e)
         {
             FieldInfo fieldInfo = (FieldInfo)((NumericUpDown)sender).Tag;
-            fieldInfo.SetValue(m_selectedSessionSettings, (short)((NumericUpDown)sender).Value);
+            Decimal value = Math.Min(((NumericUpDown)sender).Value,(Decimal)short.MaxValue);
+            fieldInfo.SetValue(m_selectedSessionSettings, (short)value);
         }
 
         private static FlowLayoutPanel AddFieldLabel(System.Reflection.FieldInfo sessionField, string displayName)
@@ -809,7 +897,7 @@ namespace VRage.Dedicated
         }
 
         private void saveConfigButton_Click(object sender, EventArgs e)
-        {
+        {    
             SaveConfiguration();
 
             if (!string.IsNullOrEmpty(MySandboxGame.ConfigDedicated.LoadWorld) && !MySandboxGame.ConfigDedicated.SessionSettings.Battle)
@@ -958,8 +1046,8 @@ namespace VRage.Dedicated
                     case ServiceControllerStatus.StopPending: { serviceStatusValueLabel.Text = "stop pending"; break; }
                 }
 
-                restartServiceButton.Enabled = m_serviceController.Status == ServiceControllerStatus.Running;
-                stopServiceButton.Enabled = m_serviceController.Status == ServiceControllerStatus.Running;
+                restartServiceButton.Enabled = m_serviceController.Status == ServiceControllerStatus.Running || m_serviceController.Status == ServiceControllerStatus.StartPending;
+                stopServiceButton.Enabled = m_serviceController.Status == ServiceControllerStatus.Running || m_serviceController.Status == ServiceControllerStatus.StartPending;
 
                 if (m_isService)
                     startButton.Enabled = m_serviceController.Status == ServiceControllerStatus.Stopped;
@@ -996,7 +1084,7 @@ namespace VRage.Dedicated
 
         private void stopService()
         {
-            if (m_serviceController.Status == ServiceControllerStatus.Running)
+            if (m_serviceController.Status == ServiceControllerStatus.Running || m_serviceController.Status == ServiceControllerStatus.StartPending)
             {
                 try
                 {

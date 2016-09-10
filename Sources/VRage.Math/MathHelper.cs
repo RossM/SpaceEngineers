@@ -230,6 +230,42 @@ namespace VRageMath
         }
 
         /// <summary>
+        /// Interpolates between zero and one using cubic equiation, solved by de Casteljau.
+        /// </summary>
+        /// <param name="amount">Weighting value [0..1].</param>
+        public static float SmoothStepStable(float amount)
+        {
+            Debug.Assert(amount >= 0f && amount <= 1f, "Wrong amount value for SmoothStep");
+            float invAmount = 1 - amount;
+            // y1 = 0, y2 = 0, y3 = 1, y4 = 1
+            // y12 = 0
+            float y23 = amount;
+            // y34 = 1
+            float y123 = /*y12 * invAmount + */ y23 * amount;
+            float y234 = y23 * invAmount + /* y34 * */amount;
+            float y1234 = y123 * invAmount + y234 * amount;
+            return y1234;
+        }
+
+        /// <summary>
+        /// Interpolates between zero and one using cubic equiation, solved by de Casteljau.
+        /// </summary>
+        /// <param name="amount">Weighting value [0..1].</param>
+        public static double SmoothStepStable(double amount)
+        {
+            Debug.Assert(amount >= 0f && amount <= 1f, "Wrong amount value for SmoothStep");
+            double invAmount = 1 - amount;
+            // y1 = 0, y2 = 0, y3 = 1, y4 = 1
+            // y12 = 0
+            double y23 = amount;
+            // y34 = 1
+            double y123 = /*y12 * invAmount + */ y23 * amount;
+            double y234 = y23 * invAmount + /* y34 * */amount;
+            double y1234 = y123 * invAmount + y234 * amount;
+            return y1234;
+        }
+
+        /// <summary>
         /// Performs a Catmull-Rom interpolation using the specified positions.
         /// </summary>
         /// <param name="value1">The first position in the interpolation.</param><param name="value2">The second position in the interpolation.</param><param name="value3">The third position in the interpolation.</param><param name="value4">The fourth position in the interpolation.</param><param name="amount">Weighting factor.</param>
@@ -355,6 +391,7 @@ namespace VRageMath
             return abMin < c ? abMin : c;
         }
 
+#if !XB1
         public static int ComputeHashFromBytes(byte[] bytes)
         {
             int size = bytes.Length;
@@ -376,6 +413,7 @@ namespace VRageMath
                 }
             }
         }
+#endif // !XB1
 
         public static float RoundOn2(float x)
         {
@@ -453,6 +491,22 @@ namespace VRageMath
             value |= value >> 8;
             value |= value >> 16;
             return lof2floor_lut[(uint)(value * 0x07C4ACDD) >> 27];
+        }
+
+        /**
+         * Based on the above and this discussion:
+         * http://stackoverflow.com/questions/3272424/compute-fast-log-base-2-ceiling
+         * 
+         */
+        public static int Log2Ceiling(int value)
+        {
+            value |= value >> 1;
+            value |= value >> 2;
+            value |= value >> 4;
+            value |= value >> 8;
+            value |= value >> 16;
+            value = lof2floor_lut[(uint)(value * 0x07C4ACDD) >> 27];
+            return (value & (value - 1)) != 0 ? value + 1 : value;
         }
 
         public static int Log2(int n)
@@ -556,6 +610,29 @@ namespace VRageMath
             }
         }
 
-        
+        public static Vector3 CalculateVectorOnSphere(Vector3 northPoleDir, float phi, float theta)
+        {
+            var sinTheta = Math.Sin(theta);
+            return Vector3.TransformNormal(new Vector3(
+               Math.Cos(phi) * sinTheta,
+               Math.Sin(phi) * sinTheta,
+               Math.Cos(theta)), Matrix.CreateFromDir(northPoleDir));
+        }
+
+        public static float MonotonicCosine(float radians)
+        {
+            if (radians > 0)
+                return 2 - (float)Math.Cos(radians);
+            else
+                return (float)Math.Cos(radians);
+        }
+
+        public static float MonotonicAcos(float cos)
+        {
+            if (cos > 1)
+                return (float)Math.Acos(2 - cos);
+            else
+                return (float)-Math.Acos(cos);
+        }
     }
 }

@@ -1,8 +1,11 @@
 ﻿using Sandbox.Common.ObjectBuilders.Definitions;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using VRage.Game;
+using VRage.Game.Definitions;
 using VRage.Game.ObjectBuilders.Definitions;
 
 namespace Sandbox.Definitions
@@ -26,6 +29,7 @@ namespace Sandbox.Definitions
             {
                 foreach (var comp in ob.ProvidingComponents)
                 {
+                    Debug.Assert(comp.Amount == 1, "Component substitution definition has amount of more than one! The code is not prepared for this!");
                     ProvidingComponents[comp.Id] = comp.Amount;
                 }
             }            

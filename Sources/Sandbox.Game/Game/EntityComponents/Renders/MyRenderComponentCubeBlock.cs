@@ -1,13 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using Sandbox.Common.Components;
+﻿using Sandbox.Engine.Utils;
 using Sandbox.Game.Entities;
-using Sandbox.Engine.Utils;
-using VRageRender;
+using System;
 using System.Diagnostics;
-using VRage.Components;
+using VRage.Game.Models;
+using VRageMath;
+using VRageRender;
 
 namespace Sandbox.Game.Components
 {
@@ -24,8 +21,11 @@ namespace Sandbox.Game.Components
         public override void InvalidateRenderObjects(bool sortIntoCullobjects = false)
         {
         }
+
         public override void AddRenderObjects()
         {
+            this.CalculateBlockDepthBias(m_cubeBlock);
+
             base.AddRenderObjects();
 
             if (MyFakes.MANUAL_CULL_OBJECTS)

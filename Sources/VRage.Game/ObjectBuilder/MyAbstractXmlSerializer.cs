@@ -1,15 +1,18 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Text;
+using System.Reflection;
 using System.Xml;
 using System.Xml.Schema;
 using System.Xml.Serialization;
 using VRage.Generics;
 using VRage.ObjectBuilders;
+using VRage.Plugins;
+#if XB1 // XB1_ALLINONEASSEMBLY
+using VRage.Utils;
+#endif // XB1
 
-namespace Sandbox.Common
+namespace VRage.Game
 {
     class CustomRootReader : XmlReader
     {
@@ -144,6 +147,109 @@ namespace Sandbox.Common
 
     }
 
+    public class MyXmlSerializerManager
+    {
+        private static readonly Dictionary<Type, XmlSerializer> m_serializersByType = new Dictionary<Type, XmlSerializer>();
+        private static readonly Dictionary<string, XmlSerializer> m_serializersBySerializedName = new Dictionary<string, XmlSerializer>();
+        private static readonly Dictionary<Type, string> m_serializedNameByType = new Dictionary<Type, string>();
+
+#if !XB1 // XB1_ALLINONEASSEMBLY
+        private static HashSet<Assembly> m_registeredAssemblies = new HashSet<Assembly>();
+#else // XB1
+        private static bool m_registered = false;
+#endif // XB1
+
+        public static void RegisterObSerialzier(Type ob)
+        {
+            if (!m_serializersByType.ContainsKey(ob))
+            {
+                XmlSerializer serializer;
+                serializer = new XmlSerializer(ob);
+                string serializedName = ob.Name;
+
+                m_serializersBySerializedName.Add(serializedName, serializer);
+                m_serializersByType.Add(ob, serializer);
+
+                m_serializedNameByType.Add(ob, serializedName);
+            }
+        }
+
+        public static void RegisterFromAssembly(Assembly assembly)
+        {
+            if (assembly == null) return;
+#if !XB1 // XB1_ALLINONEASSEMBLY
+            if (m_registeredAssemblies.Contains(assembly)) return;
+            m_registeredAssemblies.Add(assembly);
+#endif // !XB1
+
+#if XB1 // XB1_ALLINONEASSEMBLY
+            System.Diagnostics.Debug.Assert(m_registered == false);
+            if (m_registered == true)
+                return;
+            m_registered = true;
+            foreach (Type type in MyAssembly.GetTypes())
+#else // !XB1
+            foreach (Type type in assembly.GetTypes())
+#endif // !XB1
+            {
+                try
+                {
+                    string serializedName = null;
+
+                    var xmlTypes = type.GetCustomAttributes(typeof(XmlTypeAttribute), false);
+
+                    if (xmlTypes.Length > 0)
+                    {
+                        var descriptor = (XmlTypeAttribute)xmlTypes[0];
+
+                        serializedName = type.Name;
+
+                        if (!string.IsNullOrEmpty(descriptor.TypeName))
+                            serializedName = descriptor.TypeName;
+                    }
+                    else if (typeof(MyObjectBuilder_Base).IsAssignableFrom(type))
+                    {
+                        serializedName = type.Name;
+                    }
+
+                    if (serializedName != null && !m_serializersBySerializedName.ContainsKey(serializedName))
+                    {
+                        XmlSerializer serializer;
+                        serializer = new XmlSerializer(type);
+
+                        m_serializersBySerializedName.Add(serializedName, serializer);
+                        m_serializersByType.Add(type, serializer);
+
+                        m_serializedNameByType.Add(type, serializedName);
+                    }
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException("Error creating XML serializer for type " + type.Name, e);
+                }
+            }
+        }
+
+        public static XmlSerializer GetSerializer(Type type)
+        {
+            return m_serializersByType[type];
+        }
+
+        public static string GetSerializedName(Type type)
+        {
+            return m_serializedNameByType[type];
+        }
+
+        public static XmlSerializer GetSerializer(string serializedName)
+        {
+            return m_serializersBySerializedName[serializedName];
+        }
+
+        public static bool IsSerializerAvailable(string name)
+        {
+            return m_serializersBySerializedName.ContainsKey(name);
+        }
+    }
 
     public class MyAbstractXmlSerializer<TAbstractBase> : IXmlSerializable
     {
@@ -200,6 +306,7 @@ namespace Sandbox.Common
         /// <remarks>DO NOT USE THIS CONSTRUCTOR</remarks>
         public MyAbstractXmlSerializer()
         {
+            // Debug.WriteLine("AbstractXmlSerializer instantiated for: " + typeof(TAbstractBase).Name);
             // Default Ctor (Required for Xml Serialization - DO NOT USE)
         }
 
@@ -224,9 +331,13 @@ namespace Sandbox.Common
             // Cast the Data back from the Abstract Type.
             string typeAttrib = reader.GetAttribute("xsi:type");
 
-            if (typeAttrib == null)
+//#if DEBUG
+            if (typeAttrib == null || !MyXmlSerializerManager.IsSerializerAvailable(typeAttrib))
+//#else
+//            if (typeAttrib == null)
+//#endif
             {
-                typeAttrib = MyObjectBuilderSerializer.GetSerializedName(typeof(TAbstractBase));
+                typeAttrib = MyXmlSerializerManager.GetSerializedName(typeof(TAbstractBase));
             }
 
             // Read the Data, Deserializing based on the (now known) concrete type.
@@ -235,7 +346,7 @@ namespace Sandbox.Common
                 ReaderPool.AllocateOrCreate(out customReader);
                 customReader.Init(typeAttrib, reader);
 
-                var serializer = MyObjectBuilderSerializer.GetSerializer(typeAttrib);
+                var serializer = MyXmlSerializerManager.GetSerializer(typeAttrib);
                 this.Data = (TAbstractBase)serializer.Deserialize(customReader);
 
                 customReader.Release();
@@ -250,10 +361,10 @@ namespace Sandbox.Common
             {
                 CustomRootWriter customWriter;
                 WriterPool.AllocateOrCreate(out customWriter);
-                var derivedName = MyObjectBuilderSerializer.GetSerializedName(type);
+                var derivedName = MyXmlSerializerManager.GetSerializedName(type);
                 customWriter.Init(derivedName, writer);
 
-                MyObjectBuilderSerializer.GetSerializer(type).Serialize(customWriter, m_data);
+                MyXmlSerializerManager.GetSerializer(type).Serialize(customWriter, m_data);
 
                 customWriter.Release();
                 WriterPool.Deallocate(customWriter);

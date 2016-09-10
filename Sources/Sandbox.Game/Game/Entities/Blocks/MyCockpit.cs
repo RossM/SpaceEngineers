@@ -15,22 +15,37 @@ using Sandbox.Game.GameSystems.Conveyors;
 using Sandbox.Game.Gui;
 using Sandbox.Game.Multiplayer;
 using Sandbox.Game.World;
-using Sandbox.ModAPI.Ingame;
+using Sandbox.ModAPI;
 using Sandbox.ModAPI.Interfaces;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using VRage.Audio;
 using VRage.FileSystem;
 using VRageMath;
 using VRage;
+using VRage.Input;
 using VRage.Game.Entity.UseObject;
 using VRage.ModAPI;
 using Sandbox.Engine.Networking;
 using Sandbox.Game.Entities.Character.Components;
 using Sandbox.Game.EntityComponents;
 using VRage.Utils;
-using VRage.Components;
+using VRage.Game.Components;
+using VRage.Network;
+using Sandbox.Engine.Multiplayer;
+using Sandbox.Game.Localization;
+using VRage.Game;
+using VRage.Game.Definitions.Animation;
+using VRage.Game.Gui;
+using VRage.Game.Entity;
+using VRage.Game.Entity;
+using VRage.Game.ModAPI.Interfaces;
+using VRage.Serialization;
+using VRage.ObjectBuilders;
+using Sandbox.Game.Replication;
+using VRage.Game.Utils;
 
 #endregion
 
@@ -55,33 +70,42 @@ namespace Sandbox.Game.Entities
         MyCharacter m_savedPilot = null;
 
         MyAutopilotBase m_aiPilot = null;
-        public MyAutopilotBase AiPilot { get{ return m_aiPilot;} }
-        protected Matrix? m_pilotRelativeWorld = null;
+        public MyAutopilotBase AiPilot { get { return m_aiPilot; } }
+        protected readonly Sync<Matrix?> m_pilotRelativeWorld;
         protected MyDefinitionId? m_pilotGunDefinition = null;
 
         private bool m_updateSink = false;
 
         float m_headLocalXAngle = 0;
         float m_headLocalYAngle = 0;
-        MyCameraSpring m_cameraSpring;
-        MyCameraHeadShake m_cameraShake;
 
         private long m_lastGasInputUpdateTick;
 
         string m_cockpitInteriorModel;
         string m_cockpitGlassModel;
 
+        bool m_defferAttach;
+
+        private bool m_playIdleSound;
+
+        private float m_currentCameraShakePower = 0f;
+
+        bool? m_lastNearFlag = null;
+        private int m_forcedFpsTimeoutMs = 0;
+        private const int m_forcedFpsTimeoutDefaultMs = 500;
+
         protected Action<MyEntity> m_pilotClosedHandler;
+        private bool? m_pilotJetpackEnabledBackup;
 
         public float GlassDirt = 1.0f;
 
         //Backwards compatibility for MyThirdPersonSpectator
         //Default needs to be true
         private bool m_isInFirstPersonView = true;
-        public virtual bool IsInFirstPersonView 
+        public virtual bool IsInFirstPersonView
         {
             get { return m_isInFirstPersonView; }
-            set 
+            set
             {
                 bool oldValue = m_isInFirstPersonView;
                 m_isInFirstPersonView = value;
@@ -89,7 +113,21 @@ namespace Sandbox.Game.Entities
                 {
                     UpdateCameraAfterChange();
                 }
-            } 
+            }
+        }
+
+        public override bool ForceFirstPersonCamera
+        {
+            get
+            {
+                return base.ForceFirstPersonCamera && m_forcedFpsTimeoutMs <= 0;
+            }
+            set
+            {
+                if (value && !base.ForceFirstPersonCamera)
+                    m_forcedFpsTimeoutMs = m_forcedFpsTimeoutDefaultMs;
+                base.ForceFirstPersonCamera = value;
+            }
         }
 
         private MyMultilineConveyorEndpoint m_conveyorEndpoint;
@@ -102,7 +140,7 @@ namespace Sandbox.Game.Entities
         }
 
         private float m_oxygenFillLevel;
-        public float OxygenFillLevel { get { return m_oxygenFillLevel; } private set { m_oxygenFillLevel = MathHelper.Clamp(value, 0f, 1f);  } }
+        public float OxygenFillLevel { get { return m_oxygenFillLevel; } private set { m_oxygenFillLevel = MathHelper.Clamp(value, 0f, 1f); } }
 
         public float OxygenAmount
         {
@@ -113,16 +151,39 @@ namespace Sandbox.Game.Entities
                     ChangeGasFillLevel(MathHelper.Clamp(value / BlockDefinition.OxygenCapacity, 0f, 1f));
 
                 ResourceSink.Update();
-                    }
-                    }
+            }
+        }
         public float OxygenAmountMissing { get { return (1f - OxygenFillLevel) * BlockDefinition.OxygenCapacity; } }
+
+        readonly Sync<long?> m_attachedCharacterId;
+        readonly Sync<bool> m_storeOriginalPlayerWorldMatrix;
+
+        bool m_retryAttachPilot = false;
+
+        long? m_attachedCharacterIdSaved;
+
+        bool m_pilotFirstPerson = false;
         #endregion
 
         #region Init
         public MyCockpit()
         {
+#if XB1 // XB1_SYNC_NOREFLECTION
+            m_pilotRelativeWorld = SyncType.CreateAndAddProp<Matrix?>();
+            m_attachedCharacterId = SyncType.CreateAndAddProp<long?>();
+            m_storeOriginalPlayerWorldMatrix = SyncType.CreateAndAddProp<bool>();
+#endif // XB1
             m_pilotClosedHandler = new Action<MyEntity>(m_pilot_OnMarkForClose);
-            ResourceSink = new MyResourceSinkComponent();
+            ResourceSink = new MyResourceSinkComponent(2);
+
+            m_attachedCharacterId.ValueChanged += (o) => OnCharacterChanged();
+            m_soundEmitter.EmitterMethods[MyEntity3DSoundEmitter.MethodsEnum.ShouldPlay2D].Add((Func<bool>)ShouldPlay2D);
+            m_pilotRelativeWorld.ValidateNever();
+        }
+
+        bool ShouldPlay2D()
+        {
+            return MySession.Static.LocalCharacter != null && Pilot == MySession.Static.LocalCharacter;
         }
 
         public override void Init(MyObjectBuilder_CubeBlock objectBuilder, MyCubeGrid cubeGrid)
@@ -158,11 +219,11 @@ namespace Sandbox.Game.Entities
 
                 if (pilot != null)
                 {
-                    AttachPilot(pilot, storeOriginalPilotWorld: false, calledFromInit: true);
+                    m_savedPilot = pilot;
                     if (cockpitOb.PilotRelativeWorld.HasValue)
-                        m_pilotRelativeWorld = cockpitOb.PilotRelativeWorld.Value.GetMatrix();
+                        m_pilotRelativeWorld.Value = cockpitOb.PilotRelativeWorld.Value.GetMatrix();
                     else
-                        m_pilotRelativeWorld = null;
+                        m_pilotRelativeWorld.Value = null;
 
                     m_singleWeaponMode = cockpitOb.UseSingleWeaponMode;
                 }
@@ -190,13 +251,13 @@ namespace Sandbox.Game.Entities
             if (!string.IsNullOrEmpty(m_cockpitInteriorModel))
             {
 
-                if (MyModels.GetModelOnlyDummies(m_cockpitInteriorModel).Dummies.ContainsKey("head"))
-                    m_headLocalPosition = MyModels.GetModelOnlyDummies(m_cockpitInteriorModel).Dummies["head"].Matrix.Translation;
+                if (VRage.Game.Models.MyModels.GetModelOnlyDummies(m_cockpitInteriorModel).Dummies.ContainsKey("head"))
+                    m_headLocalPosition = VRage.Game.Models.MyModels.GetModelOnlyDummies(m_cockpitInteriorModel).Dummies["head"].Matrix.Translation;
             }
             else
             {
-                if (MyModels.GetModelOnlyDummies(BlockDefinition.Model).Dummies.ContainsKey("head"))
-                    m_headLocalPosition = MyModels.GetModelOnlyDummies(BlockDefinition.Model).Dummies["head"].Matrix.Translation;
+                if (VRage.Game.Models.MyModels.GetModelOnlyDummies(BlockDefinition.Model).Dummies.ContainsKey("head"))
+                    m_headLocalPosition = VRage.Game.Models.MyModels.GetModelOnlyDummies(BlockDefinition.Model).Dummies["head"].Matrix.Translation;
             }
 
             AddDebugRenderComponent(new Components.MyDebugRenderComponentCockpit(this));
@@ -207,18 +268,40 @@ namespace Sandbox.Game.Entities
 
             OxygenFillLevel = cockpitOb.OxygenLevel;
 
-            ResourceSink.Init(MyStringHash.GetOrCompute("Utility"), new MyResourceSinkInfo
-            {
-                ResourceTypeId = MyCharacterOxygenComponent.OxygenId,
-                MaxRequiredInput = BlockDefinition.OxygenCapacity,
-                RequiredInputFunc = ComputeRequiredGas,
-            });
+            var sinkDataList = new List<MyResourceSinkInfo>
+	        {
+				new MyResourceSinkInfo {ResourceTypeId = MyResourceDistributorComponent.ElectricityId, MaxRequiredInput = 0, RequiredInputFunc = CalculateRequiredPowerInput },
+				new MyResourceSinkInfo {ResourceTypeId = MyCharacterOxygenComponent.OxygenId, MaxRequiredInput = BlockDefinition.OxygenCapacity, RequiredInputFunc = ComputeRequiredGas},
+	        };
+            ResourceSink.Init(MyStringHash.GetOrCompute("Utility"), sinkDataList);
             ResourceSink.CurrentInputChanged += Sink_CurrentInputChanged;
             m_lastGasInputUpdateTick = MySession.Static.ElapsedGameTime.Ticks;
+
+            if (cockpitOb.AttachedPlayerId.HasValue == false && cockpitOb.Pilot != null && m_pilot!=null)
+            {
+                m_attachedCharacterIdSaved = m_pilot.EntityId;
+            }
+            else
+            {
+                m_attachedCharacterIdSaved = cockpitOb.AttachedPlayerId;
+            }
+            if (this.GetInventory() == null)
+            {
+                Vector3 inv = Vector3.One*1.0f;
+                MyInventory inventory = new MyInventory(inv.Volume, inv, MyInventoryFlags.CanSend | MyInventoryFlags.CanReceive);
+                Components.Add<MyInventoryBase>(inventory);
+            }
+
+            m_defferAttach = true;
         }
 
         protected virtual void PostBaseInit()
         {
+        }
+
+        float CalculateRequiredPowerInput()
+        {
+            return 0.0f;
         }
 
         float ComputeRequiredGas()
@@ -226,8 +309,8 @@ namespace Sandbox.Game.Entities
             if (!IsWorking)
                 return 0f;
 
-            float inputRequiredToFillIn100Updates = OxygenAmountMissing*MyEngineConstants.UPDATE_STEPS_PER_SECOND/100f;
-            return Math.Min(inputRequiredToFillIn100Updates, ResourceSink.MaxRequiredInputByType(MyCharacterOxygenComponent.OxygenId)*0.1f);
+            float inputRequiredToFillIn100Updates = OxygenAmountMissing * VRage.Game.MyEngineConstants.UPDATE_STEPS_PER_SECOND / 100f;
+            return Math.Min(inputRequiredToFillIn100Updates, ResourceSink.MaxRequiredInputByType(MyCharacterOxygenComponent.OxygenId) * 0.1f);
         }
 
         protected override void ComponentStack_IsFunctionalChanged()
@@ -243,6 +326,11 @@ namespace Sandbox.Game.Entities
                 if (m_pilot != null)
                 {
                     RemovePilot();
+                    if (Sync.IsServer)
+                    {
+                        m_attachedCharacterId.Value = null;
+                    }
+
                 }
 
                 ChangeGasFillLevel(0);
@@ -258,13 +346,18 @@ namespace Sandbox.Game.Entities
             objectBuilder.Autopilot = (m_aiPilot != null) ? m_aiPilot.GetObjectBuilder() : null;
             objectBuilder.PilotGunDefinition = m_pilotGunDefinition;
 
-            if (m_pilotRelativeWorld.HasValue)
-                objectBuilder.PilotRelativeWorld = new MyPositionAndOrientation(m_pilotRelativeWorld.Value);
+            if (m_pilotRelativeWorld.Value.HasValue)
+            {
+                objectBuilder.PilotRelativeWorld = new MyPositionAndOrientation(m_pilotRelativeWorld.Value.Value);
+            }
             else
+            {
                 objectBuilder.PilotRelativeWorld = null;
+            }
 
             objectBuilder.IsInFirstPersonView = IsInFirstPersonView;
             objectBuilder.OxygenLevel = OxygenFillLevel;
+            objectBuilder.AttachedPlayerId = m_attachedCharacterId;
 
             return objectBuilder;
         }
@@ -305,8 +398,9 @@ namespace Sandbox.Game.Entities
             }
             else if (Pilot != null)
             {
-                var headMatrix = Pilot.GetHeadMatrix(includeY, includeX, forceHeadAnim, IsInFirstPersonView);
-                headPosition = headMatrix.Translation + headMatrix.Backward * 0.15f + m_playerHeadSpring;
+                var headMatrix = Pilot.GetHeadMatrix(includeY, includeX, false, true, true);
+                //VRageRender.MyRenderProxy.DebugDrawAxis(headMatrix, 0.5f, false);
+                headPosition = headMatrix.Translation;
             }
 
             world.Translation = headPosition;
@@ -333,7 +427,7 @@ namespace Sandbox.Game.Entities
 
         public void Rotate(Vector2 rotationIndicator, float roll)
         {
-            float sensitivity = 0.5f;
+            float sensitivity = MyInput.Static.GetMouseSensitivity() * 0.13f;
             if (rotationIndicator.X != 0)
                 m_headLocalXAngle = MathHelper.Clamp(m_headLocalXAngle - rotationIndicator.X * sensitivity, MinHeadLocalXAngle, MaxHeadLocalXAngle);
 
@@ -346,6 +440,9 @@ namespace Sandbox.Game.Entities
                 else
                     m_headLocalYAngle = m_headLocalYAngle - rotationIndicator.Y * sensitivity;
             }
+
+            if (!IsInFirstPersonView)
+                MyThirdPersonSpectator.Static.Rotate(rotationIndicator, roll);
 
             rotationIndicator = Vector2.Zero;
         }
@@ -391,29 +488,61 @@ namespace Sandbox.Game.Entities
                 m_updateSink = false;
             }
 
-            if (m_savedPilot != null)
+            if (m_savedPilot != null && MarkedForClose == false &&Closed == false && m_savedPilot.MarkedForClose == false && m_savedPilot.Closed == false)
             {
-                AttachPilot(m_savedPilot, false);
-                m_savedPilot = null;
+                if ((m_savedPilot.NeedsUpdate & MyEntityUpdateEnum.BEFORE_NEXT_FRAME) != 0)
+                {
+                    m_savedPilot.UpdateOnceBeforeFrame();
+                    m_savedPilot.NeedsUpdate &= ~MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
+
+                    MySession.Static.Players.UpdatePlayerControllers(EntityId);
+                    MySession.Static.Players.UpdatePlayerControllers(m_savedPilot.EntityId);
+                }
+
+                AttachPilot(m_savedPilot, false,calledFromInit: true);      
             }
+            m_savedPilot = null;
+            if(m_attachedCharacterIdSaved.HasValue)
+            {
+                m_attachedCharacterId.Value = m_attachedCharacterIdSaved.Value;
+                m_attachedCharacterIdSaved = null;
+            }
+
+            m_defferAttach = false;
+        }
+
+        public override void UpdateBeforeSimulation()
+        {
+            base.UpdateBeforeSimulation();
+            if (m_soundEmitter != null && m_soundEmitter.VolumeMultiplier < 1f)
+                m_soundEmitter.VolumeMultiplier = Math.Min(1f, m_soundEmitter.VolumeMultiplier + 0.005f);
+
+            if (m_forcedFpsTimeoutMs > 0)
+                m_forcedFpsTimeoutMs -= MyEngineConstants.UPDATE_STEP_SIZE_IN_MILLISECONDS;
         }
 
         public override void UpdateBeforeSimulation10()
         {
             base.UpdateBeforeSimulation10();
 
+            if (m_soundEmitter != null)
+            {
+                if (hasPower && m_playIdleSound && (m_soundEmitter.IsPlaying == false || (m_soundEmitter.SoundPair.Equals(m_baseIdleSound) == false && m_soundEmitter.SoundPair.Equals(GetInCockpitSound) == false)) && m_baseIdleSound.Equals(MySoundPair.Empty) == false)
+                {
+                    m_soundEmitter.VolumeMultiplier = 0f;
+                    m_soundEmitter.PlaySound(m_baseIdleSound, true);
+                }
+                else if ((hasPower == false || IsWorking == false) && m_soundEmitter.IsPlaying && m_soundEmitter.SoundPair.Equals(m_baseIdleSound))
+                    m_soundEmitter.StopSound(true);
+            }
+
             if (GridResourceDistributor == null || GridGyroSystem == null || EntityThrustComponent == null)
                 return;
 
-            if (m_pilot != null)
-            {
-                m_pilot.SuitBattery.UpdateOnServer();
-            }
-
             bool autopilotEnabled = false;
-	        var thrustComp = CubeGrid.Components.Get<MyEntityThrustComponent>();
-	        if (thrustComp != null)
-		        autopilotEnabled = thrustComp.AutopilotEnabled;
+            var thrustComp = CubeGrid.Components.Get<MyEntityThrustComponent>();
+            if (thrustComp != null)
+                autopilotEnabled = thrustComp.AutopilotEnabled;
 
             bool shipControlled = CubeGrid.GridSystems.ControlSystem.IsControlled || autopilotEnabled;
 
@@ -432,37 +561,29 @@ namespace Sandbox.Game.Entities
                 {
                     m_pilot.RadioReceiver.UpdateHud();
                 }
-            }        
+            }
         }
 
         public override void UpdateBeforeSimulation100()
         {
-			base.UpdateBeforeSimulation100();
+            base.UpdateBeforeSimulation100();
 
             if (m_pilot != null && OxygenFillLevel < 0.2f && CubeGrid.GridSizeEnum == MyCubeSize.Small)
                 RefillFromBottlesOnGrid();
 
+            ResourceSink.Update();
             float timeSinceLastUpdateSeconds = (MySession.Static.ElapsedPlayTime.Ticks - m_lastGasInputUpdateTick) / (float)TimeSpan.TicksPerSecond;
+            m_lastGasInputUpdateTick = MySession.Static.ElapsedPlayTime.Ticks;
             float inputAmount = ResourceSink.CurrentInputByType(MyCharacterOxygenComponent.OxygenId) * timeSinceLastUpdateSeconds;
             ChangeGasFillLevel(OxygenFillLevel + inputAmount);
-            m_lastGasInputUpdateTick = MySession.Static.ElapsedPlayTime.Ticks;
-            ResourceSink.Update();
-        }
 
-        public override void UpdateAfterSimulation()
+            if (m_retryAttachPilot)
             {
-            base.UpdateAfterSimulation();
-
-            if (m_cameraShake != null && m_cameraSpring == null)
-            {
-                Debug.Assert(CubeGrid != null && CubeGrid.Physics != null, "Grid is null or has no physics!");
-                m_cameraSpring = new MyCameraSpring(CubeGrid.Physics);
-            }
-
-            if (m_cameraShake != null && m_cameraSpring != null)
-            {
-                m_cameraSpring.Update(MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS, PositionComp.GetWorldMatrixNormalizedInv(), ref m_playerHeadSpring);
-                m_cameraShake.UpdateShake(MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS, ref m_playerHeadSpring, ref m_playerHeadShakeDir);
+                m_retryAttachPilot = false;
+                if (m_attachedCharacterId.Value.HasValue)
+                {
+                    TryAttachPilot(m_attachedCharacterId.Value.Value);
+                }
             }
         }
 
@@ -472,80 +593,82 @@ namespace Sandbox.Game.Entities
                 return;
 
             float timeSinceLastUpdateSeconds = (MySession.Static.ElapsedPlayTime.Ticks - m_lastGasInputUpdateTick) / (float)TimeSpan.TicksPerSecond;
+            m_lastGasInputUpdateTick = MySession.Static.ElapsedPlayTime.Ticks;
+
             float inputAmount = oldInput * timeSinceLastUpdateSeconds;
             ChangeGasFillLevel(OxygenFillLevel + inputAmount);
             m_updateSink = true;
-            NeedsUpdate |= MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
-            m_lastGasInputUpdateTick = MySession.Static.ElapsedPlayTime.Ticks;
         }
 
         private void RefillFromBottlesOnGrid()
         {
-                List<IMyConveyorEndpoint> reachableVertices = new List<IMyConveyorEndpoint>();
-            MyGridConveyorSystem.Pathfinding.FindReachable(ConveyorEndpoint, reachableVertices, (vertex) => vertex.CubeBlock != null && FriendlyWithBlock(vertex.CubeBlock) && vertex.CubeBlock is IMyInventoryOwner);
+            List<IMyConveyorEndpoint> reachableVertices = new List<IMyConveyorEndpoint>();
+            MyGridConveyorSystem.FindReachable(ConveyorEndpoint, reachableVertices, (vertex) => vertex.CubeBlock != null && FriendlyWithBlock(vertex.CubeBlock) && vertex.CubeBlock.HasInventory);
 
-                bool bottlesUsed = false;
-
-                foreach (var vertex in reachableVertices)
+            bool bottlesUsed = false;
+            foreach (var vertex in reachableVertices)
+            {
+                var inventoryOwner = vertex.CubeBlock;
+                System.Diagnostics.Debug.Assert(inventoryOwner.HasInventory, "This is not inventory owner!");
+                int inventoryCount = inventoryOwner.InventoryCount;
+                
+                for (int i = 0; i < inventoryCount; i++)
                 {
-                    var inventoryOwner = vertex.CubeBlock as IMyInventoryOwner;
-                    int inventoryCount = inventoryOwner.InventoryCount;
+                    var inventory = inventoryOwner.GetInventory(i);
+                    Debug.Assert(inventory != null, "Wrong inventory type, or inventory returned is null!");
+                    var items = inventory.GetItems();
 
-                    for (int i = 0; i < inventoryCount; i++)
+                    foreach (var item in items)
                     {
-                        var inventory = inventoryOwner.GetInventory(i);
-                        var items = inventory.GetItems();
-
-                        foreach (var item in items)
+                        var oxygenContainer = item.Content as MyObjectBuilder_GasContainerObject;
+                        if (oxygenContainer != null)
                         {
-                            var oxygenContainer = item.Content as MyObjectBuilder_GasContainerObject;
-                            if (oxygenContainer != null)
-                            {
-                                if (oxygenContainer.GasLevel == 0f)
-                                    continue;
+                            if (oxygenContainer.GasLevel == 0f)
+                                continue;
 
-                                var physicalItem = MyDefinitionManager.Static.GetPhysicalItemDefinition(oxygenContainer) as MyOxygenContainerDefinition;
+                            var physicalItem = MyDefinitionManager.Static.GetPhysicalItemDefinition(oxygenContainer) as MyOxygenContainerDefinition;
                             if (physicalItem.StoredGasId != MyCharacterOxygenComponent.OxygenId)
                                 continue;
 
-								float oxygenAmount = oxygenContainer.GasLevel * physicalItem.Capacity;
+                            float oxygenAmount = oxygenContainer.GasLevel * physicalItem.Capacity;
 
-                                float transferredAmount = Math.Min(oxygenAmount, OxygenAmountMissing);
-								oxygenContainer.GasLevel = (oxygenAmount - transferredAmount) / physicalItem.Capacity;
+                            float transferredAmount = Math.Min(oxygenAmount, OxygenAmountMissing);
+                            if (transferredAmount == 0)
+                                continue;
+                            oxygenContainer.GasLevel = (oxygenAmount - transferredAmount) / physicalItem.Capacity;
 
-								if (oxygenContainer.GasLevel < 0f)
-									oxygenContainer.GasLevel = 0f;
+                            if (oxygenContainer.GasLevel < 0f)
+                                oxygenContainer.GasLevel = 0f;
 
-								if (oxygenContainer.GasLevel > 1f)
-                                    Debug.Fail("Incorrect value");
+                            if (oxygenContainer.GasLevel > 1f)
+                                Debug.Fail("Incorrect value");
 
-                                inventory.UpdateGasAmount();
+                            inventory.UpdateGasAmount();
 
-                                bottlesUsed = true;
+                            bottlesUsed = true;
 
-                                OxygenAmount += transferredAmount;
+                            OxygenAmount += transferredAmount;
                             if (OxygenFillLevel >= 1f)
-                                {
+                            {
                                 ChangeGasFillLevel(1f);
                                 ResourceSink.Update();
-                                    break;
-                                }
+                                break;
                             }
-
                         }
-                    }
-                }
 
-                if (bottlesUsed)
-                {
-                    MyHud.Notifications.Add(new MyHudNotification(text: Sandbox.Game.Localization.MySpaceTexts.NotificationBottleRefill, level: MyNotificationLevel.Important));
+                    }
                 }
             }
 
+            if (bottlesUsed)
+            {
+                MyHud.Notifications.Add(new MyHudNotification(text: Sandbox.Game.Localization.MySpaceTexts.NotificationBottleRefill, level: MyNotificationLevel.Important));
+            }
+        }
+
         public override void ShowInventory()
         {
-            if (m_enableShipControl)
-                MyGuiScreenTerminal.Show(MyTerminalPageEnum.Inventory, m_pilot, this);
+            MyGuiScreenTerminal.Show(MyTerminalPageEnum.Inventory, m_pilot, this);
         }
 
         public override void ShowTerminal()
@@ -558,6 +681,10 @@ namespace Sandbox.Game.Entities
             m_savedPilot = m_pilot;
 
             RemovePilot();
+            if (Sync.IsServer)
+            {
+                m_attachedCharacterId.Value = null;
+            }
 
             base.OnRemovedFromScene(source);
         }
@@ -583,7 +710,7 @@ namespace Sandbox.Game.Entities
             }
 
             // to turn on/off sound in dependence of distance from listener
-            NeedsUpdate = MyEntityUpdateEnum.EACH_100TH_FRAME;
+            NeedsUpdate |= MyEntityUpdateEnum.EACH_100TH_FRAME;
         }
 
         void m_pilot_OnMarkForClose(MyEntity obj)
@@ -599,9 +726,11 @@ namespace Sandbox.Game.Entities
 
         public void GiveControlToPilot()
         {
-            if (m_pilot.ControllerInfo != null && m_pilot.ControllerInfo.Controller != null)
+            MyCharacter pilot = m_pilot == null ? m_savedPilot : m_pilot;
+
+            if (pilot.ControllerInfo != null && pilot.ControllerInfo.Controller != null)
             {
-                m_pilot.SwitchControl(this);
+                pilot.SwitchControl(this);
 
                 /*if (m_enableShipControl)
                     Sync.Controllers.ExtendControl(this, this.CubeGrid);*/
@@ -612,7 +741,7 @@ namespace Sandbox.Game.Entities
         {
             if (m_pilot == null)
                 return true;
-
+         
             MyAnalyticsHelper.ReportActivityEnd(m_pilot, "Cockpit");
 
             System.Diagnostics.Debug.Assert(m_pilot.Physics != null);
@@ -643,9 +772,9 @@ namespace Sandbox.Game.Entities
 
             bool usePilotOriginalWorld = false;
             MatrixD placementMatrix = MatrixD.Identity;
-            if (m_pilotRelativeWorld.HasValue)
+            if (m_pilotRelativeWorld.Value.HasValue)
             {
-                placementMatrix = MatrixD.Multiply((MatrixD)m_pilotRelativeWorld.Value, this.WorldMatrix);
+                placementMatrix = MatrixD.Multiply((MatrixD)m_pilotRelativeWorld.Value.Value, this.WorldMatrix);
                 if (m_pilot.CanPlaceCharacter(ref placementMatrix))
                     usePilotOriginalWorld = true;
             }
@@ -685,18 +814,21 @@ namespace Sandbox.Game.Entities
                 if (m_pilot.Physics.CharacterProxy != null)
                     m_pilot.Physics.CharacterProxy.ImmediateSetWorldTransform = false;
 
+                if (m_pilotJetpackEnabledBackup.HasValue && m_pilot.JetpackComp != null)
+                    m_pilot.JetpackComp.TurnOnJetpack(m_pilotJetpackEnabledBackup.Value);
+
                 if (Parent != null && Parent.Physics != null) // Cockpit could be removing the pilot after it no longer belongs to any grid (e.g. during a split)
                 {
                     m_pilot.Physics.LinearVelocity = Parent.Physics.LinearVelocity;
 
-                    if (Parent.Physics.LinearVelocity.LengthSquared() > 100)
+                    if (Parent.Physics.LinearVelocity.LengthSquared() > 100 * Sync.RelativeSimulationRatio)
                     {
-	                    var jetpack = m_pilot.JetpackComp;
-	                    if (jetpack != null)
-	                    {
-		                    jetpack.EnableDampeners(false);
-		                    jetpack.TurnOnJetpack(true);
-	                    }
+                        var jetpack = m_pilot.JetpackComp;
+                        if (jetpack != null)
+                        {
+                            jetpack.EnableDampeners(false);
+                            jetpack.TurnOnJetpack(true);
+                        }
                     }
                 }
 
@@ -713,10 +845,12 @@ namespace Sandbox.Game.Entities
                 var pilot = m_pilot;
                 m_pilot = null;
 
-                if (MySession.Static.CameraController == this)
+                if (MySession.Static.CameraController == this && pilot == MySession.Static.LocalCharacter)
                 {
-                    MySession.SetCameraController(MyCameraControllerEnum.Entity, pilot);
+                    bool isInFirstPerson = IsInFirstPersonView;
+                    MySession.Static.SetCameraController(MyCameraControllerEnum.Entity, pilot);                
                 }
+                pilot.IsInFirstPersonView = m_pilotFirstPerson;
 
                 return true;
             }
@@ -730,7 +864,7 @@ namespace Sandbox.Game.Entities
 
         protected virtual void RemovePilotFromSeat(MyCharacter pilot)
         {
-			CubeGrid.SetInventoryMassDirty();
+            CubeGrid.SetInventoryMassDirty();
         }
 
         public void AttachAutopilot(MyAutopilotBase newAutopilot, bool updateSync = true)
@@ -741,7 +875,7 @@ namespace Sandbox.Game.Entities
 
             if (updateSync && Sync.IsServer)
             {
-                SyncObject.SendAutopilotAttached(newAutopilot.GetObjectBuilder());
+                MyMultiplayer.RaiseEvent(this, x => x.AttachAutopilot_message, newAutopilot.GetObjectBuilder());
             }
 
             NeedsUpdate |= MyEntityUpdateEnum.EACH_10TH_FRAME;
@@ -761,7 +895,7 @@ namespace Sandbox.Game.Entities
 
         public void RemoveOriginalPilotPosition()
         {
-            m_pilotRelativeWorld = null;
+            m_pilotRelativeWorld.Value = null;
         }
 
 
@@ -778,9 +912,6 @@ namespace Sandbox.Game.Entities
             {
                 UpdateCockpitModel();
                 UpdateCockpitGlass();
-
-                if (Pilot != null)
-                    Pilot.EnableHead(!Render.NearFlag);
             }
         }
 
@@ -801,9 +932,10 @@ namespace Sandbox.Game.Entities
             else
             {
                 //Disable FPS mode for large cockpit
-                if (MySession.IsCameraControlledObject()&& MySession.Static.Settings.Enable3rdPersonView)
+                if (MySession.Static.IsCameraControlledObject() && MySession.Static.Settings.Enable3rdPersonView)
                 {
-                    MySession.SetCameraController(MyCameraControllerEnum.ThirdPersonSpectator);
+                    if (Pilot != null && Pilot.ControllerInfo.IsLocallyControlled())
+                        MySession.Static.SetCameraController(MyCameraControllerEnum.ThirdPersonSpectator);
                 }
             }
 
@@ -811,27 +943,12 @@ namespace Sandbox.Game.Entities
             {
                 UpdateCockpitModel();
                 UpdateCockpitGlass();
-
-                //Pilot can be null when quiting the game and the player was remote controlling a ship from the same cockpit
-                if (Pilot != null)
-                    Pilot.EnableHead(!Render.NearFlag);
             }
         }
 
         private void UpdateNearFlag()
         {
             Render.NearFlag = MySession.Static.CameraController == this && (IsInFirstPersonView || ForceFirstPersonCamera);
-        }
-
-        public override void SwitchThrusts()
-        {
-            base.SwitchThrusts();
-            if (m_pilot != null && m_enableShipControl)
-            {
-				var jetpack = m_pilot.JetpackComp;
-                if(jetpack != null)
-                    jetpack.SwitchThrusts();
-            }
         }
 
         protected virtual void UpdateCockpitModel()
@@ -929,12 +1046,17 @@ namespace Sandbox.Game.Entities
         {
             base.OnRegisteredToGridSystems();
 
+            if (m_defferAttach)
+            {
+                return;
+            }
+
             if (m_savedPilot != null)
             {
                 AttachPilot(m_savedPilot, false);
                 m_savedPilot = null;
             }
-            }
+        }
 
         public override void OnUnregisteredFromGridSystems()
         {
@@ -949,26 +1071,19 @@ namespace Sandbox.Game.Entities
                 if (!MyEntities.CloseAllowed)
                 {
                     RemovePilot();
+                    if (Sync.IsServer)
+                    {
+                        m_attachedCharacterId.Value = null;
+                    }
+
                     pilot.DoDamage(1000, MyDamageType.Unknown, false);
                 }
                 else
                     if (MySession.Static.CameraController == this)
                     {
-                        MySession.SetCameraController(MySession.GetCameraControllerEnum(), m_pilot);
+                        MySession.Static.SetCameraController(MySession.Static.GetCameraControllerEnum(), m_pilot);
                     }
             }
-            }
-
-        protected override void sync_PilotRelativeEntryUpdated(MyPositionAndOrientation relativeEntry)
-        {
-            base.sync_PilotRelativeEntryUpdated(relativeEntry);
-            m_pilotRelativeWorld = relativeEntry.GetMatrix();
-        }
-
-        protected override void sync_UseSuccess(UseActionEnum actionEnum, IMyControllableEntity user)
-        {
-            Debug.Assert(user is MyCharacter, "Cockpits can only take control from characters");
-            AttachPilot(user as MyCharacter);
         }
 
         public void AttachPilot(MyCharacter pilot, bool storeOriginalPilotWorld = true, bool calledFromInit = false)
@@ -976,22 +1091,20 @@ namespace Sandbox.Game.Entities
             System.Diagnostics.Debug.Assert(pilot != null);
             System.Diagnostics.Debug.Assert(m_pilot == null);
 
+            if (Sync.IsServer)
+            {
+                MyMultiplayer.ReplicateImmediatelly(MyExternalReplicable.FindByObject(pilot), MyExternalReplicable.FindByObject(this.CubeGrid));
+            }
+
             MyAnalyticsHelper.ReportActivityStart(pilot, "cockpit", "cockpit", string.Empty, string.Empty);
 
             m_pilot = pilot;
             m_pilot.OnMarkForClose += m_pilotClosedHandler;
             m_pilot.IsUsing = this;
 
-            StartLoopSound();
-
             if (storeOriginalPilotWorld)
             {
-                m_pilotRelativeWorld = (Matrix)MatrixD.Multiply(pilot.WorldMatrix, this.PositionComp.GetWorldMatrixNormalizedInv());
-                if (Sync.IsServer)
-                {
-                    var relativeEntry = new MyPositionAndOrientation(m_pilotRelativeWorld.Value);
-                    SyncObject.SendPilotRelativeEntryUpdate(ref relativeEntry);
-                }
+                m_pilotRelativeWorld.Value = (Matrix)MatrixD.Multiply(pilot.WorldMatrix, this.PositionComp.WorldMatrixNormalizedInv);
             }
 
             if (pilot.InScene)
@@ -1005,10 +1118,9 @@ namespace Sandbox.Game.Entities
             Hierarchy.AddChild(m_pilot, true, true);
 
             var gunEntity = m_pilot.CurrentWeapon as MyEntity;
-            if (gunEntity != null)
+            if (gunEntity != null && !m_forgetTheseWeapons.Contains(m_pilot.CurrentWeapon.DefinitionId))
             {
-                var ob = gunEntity.GetObjectBuilder();
-                m_pilotGunDefinition = ob.GetId();
+                m_pilotGunDefinition = m_pilot.CurrentWeapon.DefinitionId;
             }
             else
                 m_pilotGunDefinition = null;
@@ -1019,24 +1131,61 @@ namespace Sandbox.Game.Entities
             {
                 BlockDefinition.CharacterAnimation = null;
             }
-
+            m_pilotFirstPerson = pilot.IsInFirstPersonView;
             PlacePilotInSeat(pilot);
             m_pilot.SuitBattery.ResourceSink.TemporaryConnectedEntity = this;
             m_rechargeSocket.PlugIn(m_pilot.SuitBattery.ResourceSink);
 
+            if (pilot.ControllerInfo.Controller != null)
+            {
+                Sync.Players.SetPlayerToCockpit(pilot.ControllerInfo.Controller.Player, this);
+            }
             // Control should be handled elsewhere if we initialize the grid in the Init(...)
-            if (!calledFromInit) GiveControlToPilot();
-            m_pilot.SwitchToWeapon(null);
+            if (!calledFromInit)
+            {
+                GiveControlToPilot();
+                m_pilot.SwitchToWeapon(null);
+
+            }
+
+            if (Sync.IsServer)
+            {               
+                m_attachedCharacterId.Value = m_pilot.EntityId;
+                m_storeOriginalPlayerWorldMatrix.Value = storeOriginalPilotWorld;
+            }
+
+            var jetpack = m_pilot.JetpackComp;
+            if (jetpack != null)
+            {
+                m_pilotJetpackEnabledBackup = jetpack.Running;
+                m_pilot.JetpackComp.TurnOnJetpack(false);
+            }
+            else
+            {
+                m_pilotJetpackEnabledBackup = null;
+            }
+
+            m_lastPilot = pilot;
+            if (GetInCockpitSound != MySoundPair.Empty && !calledFromInit)
+                PlayUseSound(true);
+            m_playIdleSound = true;
+
         }
 
         protected virtual void PlacePilotInSeat(MyCharacter pilot)
         {
-            bool pilotIsLocal = MySession.LocalHumanPlayer != null && MySession.LocalHumanPlayer.Identity.Character == pilot;
+            bool pilotIsLocal = MySession.Static.LocalHumanPlayer != null && MySession.Static.LocalHumanPlayer.Identity.Character == pilot;
             m_pilot.Sit(m_enableFirstPerson, pilotIsLocal, m_isLargeCockpit || !m_enableShipControl, BlockDefinition.CharacterAnimation);
-			CubeGrid.SetInventoryMassDirty();
+            CubeGrid.SetInventoryMassDirty();
         }
 
-        bool? m_lastNearFlag = null;
+        // These weapons will not be remembered when sitting inside the cockpit
+        // TODO: move to SBC
+        private static readonly MyDefinitionId[] m_forgetTheseWeapons = new MyDefinitionId[]
+        {
+            new MyDefinitionId(typeof(MyObjectBuilder_CubePlacer))
+        };
+
         internal void UpdateCockpitGlass()
         {
             if (string.IsNullOrEmpty(m_cockpitGlassModel))
@@ -1055,8 +1204,7 @@ namespace Sandbox.Game.Entities
 
         public void AddShake(float shakePower)
         {
-            if (m_cameraShake != null)
-                m_cameraShake.AddShake(shakePower);
+            m_currentCameraShakePower += shakePower;
         }
 
         private void ChangeGasFillLevel(float newFillLevel)
@@ -1065,12 +1213,6 @@ namespace Sandbox.Game.Entities
             {
                 OxygenFillLevel = newFillLevel;
             }
-        }
-
-
-        public MyCameraSpring CameraSpring
-        {
-            get { return m_cameraSpring; }
         }
 
         public override bool IsLargeShip()
@@ -1102,7 +1244,14 @@ namespace Sandbox.Game.Entities
 
         public override MyCharacter Pilot
         {
-            get { return m_pilot; }
+            get 
+            { 
+                if(m_pilot == null && m_savedPilot != null)
+                {
+                    return m_savedPilot;
+                }
+                return m_pilot; 
+            }
         }
 
         public MyEntity IsBeingUsedBy
@@ -1138,17 +1287,21 @@ namespace Sandbox.Game.Entities
 
         protected override void UpdateSoundState()
         {
-            m_soundEmitter.Update();
+            base.UpdateSoundState();
         }
 
         protected override void StartLoopSound()
         {
-            m_soundEmitter.PlaySound(m_baseIdleSound, true);
+            m_playIdleSound = true;
+            if (m_soundEmitter != null && hasPower && m_baseIdleSound.SoundId.IsNull == false)
+                m_soundEmitter.PlaySound(m_baseIdleSound, true);
         }
 
         protected override void StopLoopSound()
         {
-            m_soundEmitter.StopSound(true);
+            m_playIdleSound = false;
+            if (m_soundEmitter != null && m_soundEmitter.IsPlaying)
+                m_soundEmitter.StopSound(true);
         }
 
         protected override bool IsCameraController()
@@ -1161,7 +1314,7 @@ namespace Sandbox.Game.Entities
             CubeGrid.RaiseGridChanged();
             base.OnControlAcquired_UpdateCamera();
 
-            m_cameraShake = new MyCameraHeadShake();
+            m_currentCameraShakePower = 0;
         }
 
         protected override void OnControlledEntity_Used()
@@ -1174,6 +1327,10 @@ namespace Sandbox.Game.Entities
             var pilot = m_pilot;
 
             RemovePilot();
+            if(Sync.IsServer)
+            {
+                m_attachedCharacterId.Value = null;
+            }
 
             base.OnControlledEntity_Used();
         }
@@ -1182,14 +1339,23 @@ namespace Sandbox.Game.Entities
         {
             base.OnControlReleased_UpdateCamera();
 
-            m_cameraSpring = null;
-            m_cameraShake = null;
+            m_currentCameraShakePower = 0;
         }
 
         protected override void RemoveLocal()
         {
+            if (MyCubeBuilder.Static.IsActivated)
+            {
+                //MyCubeBuilder.Static.Deactivate();
+                MySession.Static.GameFocusManager.Clear();
+            }
             base.RemoveLocal();
             RemovePilot();
+            if (Sync.IsServer)
+            {
+                m_attachedCharacterId.Value = null;
+            }
+
         }
 
         protected override void OnOwnershipChanged()
@@ -1201,8 +1367,10 @@ namespace Sandbox.Game.Entities
                 if (ControllerInfo.Controller != null)
                 {
                     var relation = GetUserRelationToOwner(ControllerInfo.ControllingIdentityId);
-                    if (relation == MyRelationsBetweenPlayerAndBlock.Enemies || relation == MyRelationsBetweenPlayerAndBlock.Neutral)
-                        SyncObject.ControlledEntity_Use();
+                    if (relation == VRage.Game.MyRelationsBetweenPlayerAndBlock.Enemies || relation == VRage.Game.MyRelationsBetweenPlayerAndBlock.Neutral)
+                    {
+                        RaiseControlledEntityUsed();
+                    }
                 }
             }
         }
@@ -1210,7 +1378,7 @@ namespace Sandbox.Game.Entities
         public override List<MyHudEntityParams> GetHudParams(bool allowBlink)
         {
             var hudParams = base.GetHudParams(allowBlink);
-            long localPlayerId = MySession.LocalHumanPlayer == null ? 0 : MySession.LocalHumanPlayer.Identity.IdentityId;
+            long localPlayerId = MySession.Static.LocalHumanPlayer == null ? 0 : MySession.Static.LocalHumanPlayer.Identity.IdentityId;
             bool showPilotName = ControllerInfo.ControllingIdentityId != localPlayerId && Pilot != null;
 
             if (ShowOnHUD || IsBeingHacked)
@@ -1241,9 +1409,26 @@ namespace Sandbox.Game.Entities
             return BlockDefinition.EnableShipControl;
         }
 
-        MatrixD IMyCameraController.GetViewMatrix()
+        void IMyCameraController.ControlCamera(MyCamera currentCamera)
         {
-            return GetViewMatrix();
+            if (!m_enableFirstPerson)
+            {
+                IsInFirstPersonView = false;
+            }
+
+            currentCamera.SetViewMatrix(GetViewMatrix());
+            
+            currentCamera.CameraSpring.Enabled = true;
+            currentCamera.CameraSpring.SetCurrentCameraControllerVelocity(Physics != null ? Physics.LinearVelocity : Vector3.Zero);
+
+            if (m_currentCameraShakePower > 0)
+            {
+                currentCamera.CameraShake.AddShake(m_currentCameraShakePower);
+                m_currentCameraShakePower = 0;
+            }
+
+            if (Pilot != null && Pilot.InScene && ControllerInfo.IsLocallyControlled())
+                Pilot.EnableHead(!IsInFirstPersonView && !ForceFirstPersonCamera);
         }
 
         void IMyCameraController.Rotate(Vector2 rotationIndicator, float rollIndicator)
@@ -1264,6 +1449,8 @@ namespace Sandbox.Game.Entities
         void IMyCameraController.OnReleaseControl(IMyCameraController newCameraController)
         {
             OnReleaseControl(newCameraController);
+            if (Pilot != null && Pilot.InScene)
+                Pilot.EnableHead(true);
         }
 
         bool IMyCameraController.IsInFirstPersonView
@@ -1295,6 +1482,11 @@ namespace Sandbox.Game.Entities
             return false;
         }
 
+        bool IMyCameraController.HandlePickUp()
+        {
+            return false;
+        }
+
         bool IMyCameraController.AllowCubeBuilding
         {
             get
@@ -1308,30 +1500,122 @@ namespace Sandbox.Game.Entities
             return IsWorking && BlockDefinition.IsPressurized;
         }
 
-    /*    int IMyGasConsumer.GetPriority()
+        public void RequestUse(UseActionEnum actionEnum, MyCharacter user)
         {
-            return 0;
-        }
-
-        float IMyGasConsumer.ConsumptionNeed(float deltaTime)
-        {
-            float OXYGEN_REGEN_PER_SECOND = 2f;
-
-            return Math.Min(OXYGEN_REGEN_PER_SECOND * deltaTime, OxygenAmountMissing);
-        }
-
-        void IMyGasConsumer.Consume(float amount)
-        {
-            if (amount <= 0f)
+            if (user.IsDead)
             {
                 return;
             }
-
-            OxygenAmount += amount;
-            if (m_oxygenLevel > 1f)
+            UseActionResult result = UseActionResult.OK;
+            IMyControllableEntity controllableEntity = user as IMyControllableEntity;
+            if ((result = CanUse(actionEnum, controllableEntity)) == UseActionResult.OK)
             {
-                m_oxygenLevel = 1f;
+                MyMultiplayer.RaiseEvent(this, x => x.AttachPilotEvent, actionEnum, user.EntityId);
             }
-        }*/
+            else
+            {
+                AttachPilotEventFailed(result);
+            }
+
         }
+
+        [Event, Reliable, Server]
+        public void AttachPilotEvent(UseActionEnum actionEnum, long characterID)
+        {
+            var usableEntity = this as IMyUsableEntity;
+            MyEntity controlledEntity;
+            bool entityExists = MyEntities.TryGetEntityById<MyEntity>(characterID, out controlledEntity);
+            IMyControllableEntity controllableEntity = controlledEntity as IMyControllableEntity;
+            Debug.Assert(controllableEntity != null, "Controllable entity needs to get control from another controllable entity");
+            Debug.Assert(entityExists && usableEntity != null);
+
+            UseActionResult result = UseActionResult.OK;
+            MyCharacter character = controllableEntity as MyCharacter;
+            if (entityExists && usableEntity != null && (result = usableEntity.CanUse(actionEnum, controllableEntity)) == UseActionResult.OK)
+            {
+                AttachPilot(character);
+
+            }
+        }
+
+        public void AttachPilotEventFailed(UseActionResult actionResult)
+        {
+            if (actionResult == UseActionResult.UsedBySomeoneElse)
+                MyHud.Notifications.Add(new MyHudNotification(MyCommonTexts.AlreadyUsedBySomebodyElse, 2500, MyFontEnum.Red));
+            else if (actionResult == UseActionResult.AccessDenied)
+                MyHud.Notifications.Add(MyNotificationSingletons.AccessDenied);
+            else if (actionResult == UseActionResult.Unpowered)
+                MyHud.Notifications.Add(new MyHudNotification(MySpaceTexts.BlockIsNotPowered, 2500, MyFontEnum.Red));
+            else if (actionResult == UseActionResult.CockpitDamaged)
+                MyHud.Notifications.Add(new MyHudNotification(MySpaceTexts.Notification_CockpitIsDamaged, 2500, MyFontEnum.Red));
+        }
+
+        void OnCharacterChanged()
+        {
+            m_retryAttachPilot = false;
+            if (m_attachedCharacterId.Value.HasValue)
+            {
+                TryAttachPilot(m_attachedCharacterId.Value.Value);
+            }
+            else if (m_pilot != null)
+            {
+                RemovePilot();
+                if (Sync.IsServer)
+                {
+                    m_attachedCharacterId.Value = null;
+                }
+            }
+        }
+
+        void TryAttachPilot(long pilotId)
+        {
+            if (m_pilot == null || m_pilot.EntityId != pilotId)
+            {
+                Debug.Assert(m_savedPilot == null, "saved pilot ");
+                m_savedPilot = null;
+                RemovePilot();
+                MyEntity controlledEntity;
+                if (MyEntities.TryGetEntityById<MyEntity>(pilotId, out controlledEntity))
+                {
+                    MyCharacter character = controlledEntity as MyCharacter;
+                    if (character != null)
+                    {
+                        AttachPilot(character,m_storeOriginalPlayerWorldMatrix);
+                    }
+                }
+                else
+                {
+                    m_retryAttachPilot = true;
+                }
+             
+            }
+        }
+
+        public void ClearSavedpilot()
+        {
+            m_attachedCharacterIdSaved = null;
+            m_attachedCharacterId.Value = null;
+            m_savedPilot = null;
+        }
+
+        [Event, Reliable, Broadcast]
+        void AttachAutopilot_message([Serialize(MyObjectFlags.Dynamic | MyObjectFlags.Nullable, DynamicSerializerType = typeof(MyObjectBuilderDynamicSerializer))] MyObjectBuilder_AutopilotBase autopilot)
+        {
+            AttachAutopilot(MyAutopilotFactory.CreateAutopilot(autopilot), updateSync: false);
+        }
+
+        #region IMyConveyorEndpointBlock implementation
+
+        public Sandbox.Game.GameSystems.Conveyors.PullInformation GetPullInformation()
+        {
+            return null;
+        }
+
+        public Sandbox.Game.GameSystems.Conveyors.PullInformation GetPushInformation()
+        {
+            return null;
+        }
+
+        #endregion
     }
+}

@@ -1,7 +1,7 @@
 ﻿using Sandbox.Game;
 using Sandbox.Game.Entities;
-using Sandbox.ModAPI;
 using System.Collections.Generic;
+using VRage.Game.ModAPI;
 using VRage.Game.ObjectBuilders;
 using VRage.Utils;
 
@@ -92,7 +92,7 @@ namespace SpaceStatEffect
 
 			string actionId = "MedRoomHeal";
 			action.StatId = HealthId;
-			action.Amount = MyEffectConstants.MedRoomHeal;
+			action.Cost = MyEffectConstants.MedRoomHeal;
 			AddAction(actionId, action);
 		}
 	}

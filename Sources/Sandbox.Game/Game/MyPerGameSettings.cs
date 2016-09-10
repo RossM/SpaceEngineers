@@ -1,4 +1,6 @@
-﻿using Sandbox.Engine.Networking;
+﻿using Sandbox.Common.ObjectBuilders.Definitions;
+using Sandbox.Engine.Multiplayer;
+using Sandbox.Engine.Networking;
 using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
 using Sandbox.Engine.Voxels;
@@ -6,11 +8,15 @@ using Sandbox.Game.Entities.Cube;
 using Sandbox.Game.Entities.Interfaces;
 using System;
 using System.Diagnostics;
-using VRage.Components;
+using VRage.Game.Components;
+using Sandbox.Game.Entities;
+using Sandbox.Game.Weapons;
 using VRage.Data;
 using VRage.Data.Audio;
 using VRage.Utils;
 using VRageMath;
+using Sandbox.Common;
+using VRage.Game;
 
 namespace Sandbox.Game
 {
@@ -46,6 +52,7 @@ namespace Sandbox.Game
         public bool MultipleSpinningWheels;
         public Type HUDScreen;
         public Type ToolbarConfigScreen; // aka G-screen
+        public Type ToolbarControl;
         public Type OptionsScreen;
         public Type CustomWorldScreen;
         public Type ScenarioScreen;
@@ -59,6 +66,10 @@ namespace Sandbox.Game
         public Type BattleLobbyClientScreen;
         public Type ScenarioLobbyClientScreen;
         public Type InventoryScreen;
+        public Type AdminMenuScreen;
+        public Type FactionScreen;
+        public Type CreateFactionScreen;
+        public Type PlayersScreen;
 
         public string[] MainMenuBackgroundVideos;
 
@@ -71,25 +82,55 @@ namespace Sandbox.Game
     {
         UNKNOWN_GAME,
         SE_GAME,
-        ME_GAME
+        ME_GAME,
+        VRS_GAME
+    }
+
+    public struct MyBasicGameInfo
+    {
+        public int? GameVersion;
+        public string GameName;
+        /// <summary>
+        /// Game name without any spaces and generally usable for folder names.
+        /// </summary>
+        public string GameNameSafe;
+        public string ApplicationName;
+        public string GameAcronym;
+        public string MinimumRequirementsWeb;
+        public string SplashScreenImage;
+
+        public bool CheckIsSetup()
+        {
+            bool retval = true;
+
+            var fields = this.GetType().GetFields();
+            foreach (var field in fields)
+            {
+                bool fieldIsSetup = field.GetValue(this) != null;
+                Debug.Assert(fieldIsSetup, "The field " + field.Name + " of MyperGameSettings.BasicGameInfo was not initialized!");
+
+                retval = retval && fieldIsSetup;
+            }
+
+            return retval;
+        }
     }
 
     public static class MyPerGameSettings
     {
+        public static MyBasicGameInfo BasicGameInfo = new MyBasicGameInfo();
+
         public static GameEnum Game = GameEnum.UNKNOWN_GAME;
-        public static string GameName = "Unknown great game";
-        /// <summary>
-        /// Game name without any spaces and generally usable for folder names.
-        /// </summary>
-        public static string GameNameSafe = "SpaceEngineers";
+        public static string GameName { get { return BasicGameInfo.GameName; } }
+        public static string GameNameSafe { get { return BasicGameInfo.GameNameSafe; } }
         public static string GameWebUrl = "www.SpaceEngineersGame.com";
         public static string LocalizationWebUrl = "http://www.spaceengineersgame.com/localization.html";
         public static string ChangeLogUrl = "http://mirror.keenswh.com/SpaceEngineersChangelog.xml";
-        public static string MinimumRequirementsPage = "http://www.spaceengineersgame.com/system-requirements.html";
+        public static string MinimumRequirementsPage { get { return BasicGameInfo.MinimumRequirementsWeb; } }
         public static bool RequiresDX11 = false;
         public static string GameIcon;
         public static bool EnableGlobalGravity;
-        public static bool ZoomRequiresLookAroundPressed = false;
+        public static bool ZoomRequiresLookAroundPressed = true;
 
         public static bool EnablePregeneratedAsteroidHack = false;
         public static bool SendLogToKeen = true;
@@ -103,18 +144,24 @@ namespace Sandbox.Game
         public static string GA_Other_GameKey = String.Empty;
         public static string GA_Other_SecretKey = String.Empty;
 
-        public static MyPlacementSettings CreationSettings;
-        public static MyPlacementSettings BuildingSettings;
-        public static MyPlacementSettings PastingSettings;
         public static string GameModAssembly;
+        public static string GameModObjBuildersAssembly;
+        public static string GameModBaseObjBuildersAssembly;
         public static string SandboxAssembly = "Sandbox.Common.dll";
         public static string SandboxGameAssembly = "Sandbox.Game.dll";
 
-        public static bool SingleCluster = false;
         public static int LoadingScreenQuoteCount = 71;
         public static bool OffsetVoxelMapByHalfVoxel = false;
 
+        public static bool UseVolumeLimiter = false;
+        public static bool UseMusicController = false;
+
+        public static bool UseSameSoundLimiter = false;
+        public static bool UseNewDamageEffects = false;
+
         public static bool RestrictSpectatorFlyMode = false;
+
+        public static float MaxFrameRate = 120;
 
         private static Type m_isoMesherType = typeof(MyDualContouringMesher);
         //private static Type m_isoMesherType = typeof(MyMarchingCubesMesher);
@@ -131,6 +178,9 @@ namespace Sandbox.Game
                 m_isoMesherType = value;
             }
         }
+
+        // Minimum mass a floating object must have to be able to push large ships.
+        public static double MinimumLargeShipCollidableMass = 1000;
 
         public static float? ConstantVoxelAmbient;
 
@@ -176,9 +226,11 @@ namespace Sandbox.Game
         public static bool CharacterStartsOnVoxel = false;
         public static bool LimitedWorld = false;
         public static bool EnableCollisionSparksEffect = true;
-        public static bool UseAnimationInsteadOfIK = false;
+
+        private static bool m_useAnimationInsteadOfIK = false;
+
         public static bool MultiplayerEnabled = true;
-        public static bool EnableMultiplayerVelocityCompensation = true;
+        public static Type ClientStateType = typeof(MyClientState);
 
         public static bool WorkshopUseUGCEnumerate = true;
         public static string SteamGameServerGameDir = "Space Engineers";
@@ -194,13 +246,10 @@ namespace Sandbox.Game
         public static MyGUISettings GUI = new MyGUISettings()
         {
             MultipleSpinningWheels = true,
-            LoadingScreenIndexRange = new Vector2I(1,1),
-            MainMenuBackgroundVideos = new string[] {
-                @"Videos\Background01_720p.wmv",
-                @"Videos\Background02_720p.wmv",
-            },
+            LoadingScreenIndexRange = new Vector2I(1,24),
             HUDScreen = typeof(Sandbox.Game.Gui.MyGuiScreenHudSpace),
             ToolbarConfigScreen = typeof(Sandbox.Game.Gui.MyGuiScreenCubeBuilder),
+            ToolbarControl = typeof(Sandbox.Game.Screens.Helpers.MyGuiControlToolbar),
             CustomWorldScreen = typeof(Sandbox.Game.Gui.MyGuiScreenWorldSettings),
             ScenarioScreen = typeof(Sandbox.Game.Gui.MyGuiScreenScenario),
             TutorialScreen = typeof(Sandbox.Game.Gui.MyGuiScreenTutorial),
@@ -208,6 +257,9 @@ namespace Sandbox.Game
             HelpScreen = typeof(Sandbox.Game.Gui.MyGuiScreenHelpSpace),
             VoxelMapEditingScreen = typeof(Sandbox.Game.Gui.MyGuiScreenDebugSpawnMenu),
             ScenarioLobbyClientScreen = typeof(Sandbox.Game.Screens.MyGuiScreenScenarioMpClient),
+            AdminMenuScreen = typeof(Sandbox.Game.Gui.MyGuiScreenAdminMenu),
+            CreateFactionScreen = typeof(Sandbox.Game.Gui.MyGuiScreenCreateOrEditFaction),
+            PlayersScreen = typeof(Sandbox.Game.Gui.MyGuiScreenPlayers)
         };
 
         // Artificial intelligence
@@ -229,7 +281,7 @@ namespace Sandbox.Game
         public static RigidBodyFlag GridRBFlagOnClients = RigidBodyFlag.RBF_DEFAULT;
         public static RigidBodyFlag NetworkCharacterType = RigidBodyFlag.RBF_KINEMATIC;
         public static float NetworkCharacterScale = 1.0f;
-        public static int NetworkCharacterCollisionLayer = MyPhysics.CharacterNetworkCollisionLayer;
+        public static int NetworkCharacterCollisionLayer = MyPhysics.CollisionLayers.CharacterNetworkCollisionLayer;
         public static bool TryConvertGridToDynamicAfterSplit = false;
         public static bool AnimateOnlyVisibleCharacters = false;
 
@@ -253,9 +305,7 @@ namespace Sandbox.Game
         public static float CharacterSqueezeCriticalDamageMass = 3000;
         public static float CharacterSqueezeDeadlyDamageMass = 5000;
         
-        public static bool CharacterSuicideEnabled = false;
-
-		public static bool NonloopingCharacterFootsteps = false;
+        public static bool CharacterSuicideEnabled = true;
 
         public static Func<bool> ConstrainInventory = () => Sandbox.Game.World.MySession.Static.SurvivalMode;
         
@@ -263,7 +313,7 @@ namespace Sandbox.Game
         public static bool SimplePlayerNames = false;
         public static Type CharacterDetectionComponent;
 
-        public static string BugReportUrl = "https://steamcommunity.com/openid/login?openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0&openid.mode=checkid_setup&openid.return_to=http%3A%2F%2Fforums.keenswh.com%2Fregister%2Fsteam%3Fredirect%3Dhttp%253A%252F%252Fforums.keenswh.com%252Fforums%252Fbug-reports.326950%252F&openid.realm=http%3A%2F%2Fforums.keenswh.com&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select";
+        public static string BugReportUrl = "http://forum.keenswh.com/forums/bug-reports.326950";
 
         public static bool EnableScenarios = false;
         public static bool EnableTutorials = false;
@@ -286,13 +336,30 @@ namespace Sandbox.Game
 
         public static Type VoiceChatLogic = null;
         public static bool VoiceChatEnabled = false;
+        public static bool EnableMutePlayer = false;    // mute checkox on players page + muting of voicechat of selected players
 
         public static bool EnableJumpDrive = false;
-
-        public static Func<float> GetElapsedMinutes = () => (float)Sandbox.Game.World.MySession.Static.ElapsedGameTime.TotalMinutes;
+        public static bool EnableShipSoundSystem = false;
 
         public static Engine.Networking.IMyAnalytics AnalyticsTracker = null; // = MyInfinarioAnalytics.Instance;
         
         public static bool EnableFloatingObjectsActiveSync = false;
+        public static string InfinarioOfficial;
+        public static string InfinarioDebug;
+        public static bool DisableAnimationsOnDS = true;
+        
+        public static float CharacterGravityMultiplier = 1.0f;
+
+        public static bool BlockForVoxels = false;
+        public static bool AlwaysShowAvailableBlocksOnHud = false;
+
+        public static float MaxAntennaDrawDistance = 500000;
+
+        public static bool EnableResearch = false;
+
+        public static VRageRender.MyRenderDeviceSettings? DefaultRenderDeviceSettings;
+
+        // Factions
+        public static MyRelationsBetweenFactions DefaultFactionRelationship = MyRelationsBetweenFactions.Enemies;
     }
 }

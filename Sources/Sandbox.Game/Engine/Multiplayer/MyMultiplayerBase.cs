@@ -27,7 +27,9 @@ using VRage.Library.Collections;
 using Sandbox.Game.Entities;
 using VRage.Network;
 using VRage.Library.Utils;
-
+using Sandbox.Game;
+using VRage.Game;
+using SharpDX;
 
 #endregion
 
@@ -40,14 +42,9 @@ namespace Sandbox.Engine.Multiplayer
         Disconnected,
         Ban,
 
-        Chat,
-        ServerData,
-        ClientData,
-        JoinResult,
         Ack,
         Ping,
 
-        BattleData,
         BattleKeyValue,
     }
 
@@ -82,17 +79,11 @@ namespace Sandbox.Engine.Multiplayer
         public BoolBlit Banned;
     }
 
-    [MessageId(13885, P2PMessageEnum.Reliable)]
-    [ProtoContract]
     public struct AllMembersDataMsg
     {
-        [ProtoMember]
         public List<MyObjectBuilder_Identity> Identities;
-        [ProtoMember]
         public List<MyPlayerCollection.AllPlayerData> Players;
-        [ProtoMember]
         public List<MyObjectBuilder_Faction> Factions;
-        [ProtoMember]
         public List<MyObjectBuilder_Client> Clients;
     }
 
@@ -157,6 +148,7 @@ namespace Sandbox.Engine.Multiplayer
 
     #endregion
 
+    [StaticEventOwner]
     [PreloadRequired]
     public abstract class MyMultiplayerBase : IDisposable
     {
@@ -189,7 +181,10 @@ namespace Sandbox.Engine.Multiplayer
 
         private int m_lastKickUpdate;
 
-        private HashSet<MySyncEntity> m_dirtyPhysicsEntities = new HashSet<MySyncEntity>();
+        // Memory leak - blocks are kept in memory
+        // All entities are put into this hashset, but the hashset is not being cleared since revision 62788.
+        //private HashSet<MySyncEntity> m_dirtyPhysicsEntities = new HashSet<MySyncEntity>();
+
         Dictionary<int, ITransportCallback> m_controlMessageHandlers = new Dictionary<int, ITransportCallback>();
         Dictionary<Type, MyControlMessageEnum> m_controlMessageTypes = new Dictionary<Type, MyControlMessageEnum>();
 
@@ -213,7 +208,19 @@ namespace Sandbox.Engine.Multiplayer
         }
         public abstract bool IsServer { get; }
 
-        public float ServerSimulationRatio = 1.0f;
+        float m_serverSimulationRatio = 1.0f;
+        public float ServerSimulationRatio
+        {
+            get 
+            {
+                return (float)Math.Round(m_serverSimulationRatio, 2);
+            }
+            set 
+            {
+                m_serverSimulationRatio = value;
+            }
+        }
+
         public DictionaryReader<string, byte[]> VoxelMapData { get { return m_voxelMapData; } }
         public uint FrameCounter { get; private set; }
 
@@ -236,6 +243,8 @@ namespace Sandbox.Engine.Multiplayer
         public abstract string ScenarioBriefing { get; set; }
         public abstract DateTime ScenarioStartTime { get; set; }
         public abstract bool Battle { get; set; }
+        // Battle game remaining time in seconds.
+        public abstract float BattleRemainingTime { get; set; }
         public abstract bool BattleCanBeJoined { get; set; }
         public abstract ulong BattleWorldWorkshopId { get; set; }
         public abstract int BattleFaction1MaxBlueprintPoints { get; set; }
@@ -324,7 +333,7 @@ namespace Sandbox.Engine.Multiplayer
         {
             get
             {
-                return SyncLayer.LastMessageFromServer;
+                return MyMultiplayer.ReplicationLayer.LastMessageFromServer;
             }
         }
 
@@ -398,7 +407,7 @@ namespace Sandbox.Engine.Multiplayer
             for (int i = 0; i < MemberCount; i++)
             {
                 ulong member = GetMemberByIndex(i);
-                if (member != MySteam.UserId && member != exceptUserId)
+                if (member != Sync.MyId && member != exceptUserId)
                     SendControlMessage(member, ref message);
             }
         }
@@ -461,9 +470,15 @@ namespace Sandbox.Engine.Multiplayer
         protected abstract void OnClientBan(ref MyControlBanClientMsg data, ulong sender);
         protected abstract void OnPing(ref MyControlPingMsg data, ulong sender);
 
+        protected virtual void OnChatMessage(ref ChatMsg msg)
+        {
+
+        }
+
         void OnDisconnectedClient(ref MyControlDisconnectedMsg data, ulong sender)
         {
             RaiseClientLeft(data.Client, ChatMemberStateChangeEnum.Disconnected);
+            Console.WriteLine("Disconnected: " + sender);
         }
 
 
@@ -547,9 +562,21 @@ namespace Sandbox.Engine.Multiplayer
 
         public void MarkPhysicsDirty(MySyncEntity entity)
         {
-            if (IsServer)
+            // Memory leak - blocks are kept in memory
+            // All entities are put into this hashset, but the hashset is not being cleared since revision 62788.
+            /*if (IsServer)
             {
                 m_dirtyPhysicsEntities.Add(entity);
+            }*/
+        }
+
+        public void ReportReplicatedObjects()
+        {
+            if (VRageRender.Profiler.MyRenderProfiler.ProfilerVisible)
+            {
+                ProfilerShort.Begin("ReportReplicatedObjects (only when profiler visible)");
+                ReplicationLayer.ReportReplicatedObjects();
+                ProfilerShort.End();
             }
         }
 
@@ -557,17 +584,22 @@ namespace Sandbox.Engine.Multiplayer
         {
             FrameCounter++;
 
-            if (MyFakes.ENABLE_MULTIPLAYER_CONSTRAINT_COMPENSATION && IsServer && FrameCounter % 2 == 0)
+            ProfilerShort.Begin("SendSimulationInfo");
+            if (MyFakes.ENABLE_MULTIPLAYER_CONSTRAINT_COMPENSATION && IsServer)
             {
-                MySyncGlobal.SendSimulationInfo();
+                SendSimulationInfo();
             }
+            ProfilerShort.End();
 
+            ProfilerShort.Begin("SendElapsedGameTime");
             if (IsServer && (MySession.Static.ElapsedGameTime - m_lastSentTimeTimestamp).Seconds > 30)
             {
                 m_lastSentTimeTimestamp = MySession.Static.ElapsedGameTime;
-                MySyncGlobal.SendElapsedGameTime();
+                SendElapsedGameTime();
             }
+            ProfilerShort.End();
 
+            ProfilerShort.Begin("Client kick update");
             int currentTotalTime = MySandboxGame.TotalTimeInMilliseconds;
             if (currentTotalTime - m_lastKickUpdate > 20000)
             {
@@ -586,73 +618,27 @@ namespace Sandbox.Engine.Multiplayer
 
                 m_lastKickUpdate = currentTotalTime;
             }
-
+            ProfilerShort.End();
+            
+            ProfilerShort.Begin("ReplicationLayer.Update");
             ReplicationLayer.Update();
-            if (VRageRender.Profiler.MyRenderProfiler.ProfilerVisible)
-            {
-                ReplicationLayer.ReportReplicatedObjects();
-            }
-
+            ProfilerShort.End();
+            
             // TODO: Remove
             //if (IsServer)
             //{
             //    SendServerPhysicsUpdate();
             //}
 
+            ProfilerShort.Begin("TransportLayer.Tick");
             Sync.Layer.TransportLayer.Tick();
+            ProfilerShort.End();
 
+            ProfilerShort.Begin("Trace, NetProfiler.Commit");
             VRage.Trace.MyTrace.Send(VRage.Trace.TraceWindow.Multiplayer, "============ Frame end ============");
             NetProfiler.Commit();
+            ProfilerShort.End();
         }
-
-        //private void SendServerPhysicsUpdate()
-        //{
-        //    foreach (var e in m_dirtyPhysicsEntities)
-        //    {
-        //        if (e.ShouldSendPhysicsUpdate())
-        //        {
-        //            m_sendPhysicsStream.ResetWrite();
-        //            m_sendPhysicsStream.WriteInt64(e.Entity.EntityId);
-        //            e.SerializePhysics(m_sendPhysicsStream, null);
-
-        //            ulong except = e.GetResponsiblePlayer();
-
-        //            // TODO: coalesce
-        //            foreach (var client in Sync.Clients.GetClients())
-        //            {
-        //                if (client.SteamUserId != MySteam.UserId && client.SteamUserId != except)
-        //                    Sync.Layer.TransportLayer.SendMessage(MyMessageId.SERVER_UPDATE, m_sendPhysicsStream, false, new EndpointId(client.SteamUserId));
-        //            }
-        //            e.SetPhysicsUpdateSent();
-        //        }
-        //    }
-
-        //    // Remove entities which are not moving for some time (6 updates with zero velocities sent = 2s)
-        //    m_dirtyPhysicsEntities.RemoveWhere(s => s.StationaryUpdatesCount > 6);
-        //}
-
-        //private void OnServerPhysicsUpdate(MyPacket packet)
-        //{
-        //    m_sendPhysicsStream.ResetRead(packet);
-
-        //    var entityId = m_sendPhysicsStream.ReadInt64();
-        //    MyEntity entity;
-        //    if (!MyEntities.TryGetEntityById(entityId, out entity))
-        //        return;
-
-        //    MyNetworkClient sender;
-        //    if (!Sync.Clients.TryGetClient(packet.Sender.Value, out sender))
-        //    {
-        //        Debug.Fail("Sender not found");
-        //        return;
-        //    }
-
-        //    MySyncEntity syncEntity = entity.SyncObject as MySyncEntity;
-        //    if (syncEntity == null)
-        //        return;
-
-        //    syncEntity.SerializePhysics(m_sendPhysicsStream, sender);
-        //}
 
         public abstract void SendChatMessage(string text);
 
@@ -741,7 +727,7 @@ namespace Sandbox.Engine.Multiplayer
             for (int i = 0; i < MemberCount; i++)
             {
                 var member = GetMemberByIndex(i);
-                if (member != MySteam.UserId && member == ServerId)
+                if (member != Sync.MyId && member == ServerId)
                 {
                     Peer2Peer.CloseSession(member);
                 }
@@ -752,7 +738,7 @@ namespace Sandbox.Engine.Multiplayer
         {
             Debug.Assert(Sync.IsServer);
 
-            var response = new AllMembersDataMsg();
+            AllMembersDataMsg response = new AllMembersDataMsg();
             if (Sync.Players != null)
             {
                 response.Identities = Sync.Players.SaveIdentities();
@@ -764,11 +750,16 @@ namespace Sandbox.Engine.Multiplayer
 
             response.Clients = MySession.Static.SaveMembers(true);
 
-            SyncLayer.SendMessage(ref response, clientId);
+            MyMultiplayer.RaiseStaticEvent(s => MyMultiplayerBase.OnAllMembersRecieved, response, new EndpointId(clientId));
+        }
+
+        public virtual void OnAllMembersData(ref AllMembersDataMsg msg)
+        {
+
         }
 
         protected void ProcessAllMembersData(ref AllMembersDataMsg msg)
-        {
+        {    
             Debug.Assert(!Sync.IsServer);
 
             Sync.Players.ClearIdentities();
@@ -780,6 +771,64 @@ namespace Sandbox.Engine.Multiplayer
                 Sync.Players.LoadPlayers(msg.Players);
 
             MySession.Static.Factions.LoadFactions(msg.Factions, true);
+        }
+
+        protected MyClientState CreateClientState()
+        {
+            return Activator.CreateInstance(MyPerGameSettings.ClientStateType) as MyClientState;
+        }
+
+        public static void SendSimulationInfo()
+        {
+            Debug.Assert(Sync.IsServer, "Only server should send simulation ratio");
+
+            ProfilerShort.Begin("GetSimSpeed");
+            Half simulationSpeed = Sandbox.Engine.Physics.MyPhysics.SimulationRatio;
+            ProfilerShort.End();
+            ProfilerShort.Begin("SendSimSpeed");
+            MyMultiplayer.RaiseStaticEvent(s => MyMultiplayerBase.OnSimulationInfo, simulationSpeed);
+            ProfilerShort.End();
+        }
+
+        [Event, Broadcast]
+        static void OnSimulationInfo(Half simulationSpeed)
+        {
+            Sync.ServerSimulationRatio = simulationSpeed;
+           /* if (MyPerGameSettings.EnableGlobalGravity)
+            {
+                Sandbox.Engine.Physics.MyPhysics.UpdateGravity(Sync.RelativeSimulationRatio);
+            }*/
+        }
+
+        public static void SendElapsedGameTime()
+        {
+            Debug.Assert(Sync.IsServer, "Only server can send time info");
+
+            long elapsedGameTicks = MySession.Static.ElapsedGameTime.Ticks;
+            MyMultiplayer.RaiseStaticEvent(s => MyMultiplayerBase.OnElapsedGameTime, elapsedGameTicks);
+        }
+
+        [Event, Broadcast]
+        static void OnElapsedGameTime(long elapsedGameTicks)
+        {
+            MySession.Static.ElapsedGameTime = new TimeSpan(elapsedGameTicks);
+        }
+
+        protected static void SendChatMessage(ref ChatMsg msg)
+        {
+            MyMultiplayer.RaiseStaticEvent(s => MyMultiplayerBase.OnChatMessageRecieved, msg);
+        }
+
+        [Event,Reliable, Client]
+        static void OnAllMembersRecieved(AllMembersDataMsg msg)
+        {
+            MyMultiplayer.Static.OnAllMembersData(ref msg);
+        }
+
+        [Event,Reliable, Server, BroadcastExcept]
+        static void OnChatMessageRecieved(ChatMsg msg)
+        {
+            MyMultiplayer.Static.OnChatMessage(ref msg);
         }
 
     }

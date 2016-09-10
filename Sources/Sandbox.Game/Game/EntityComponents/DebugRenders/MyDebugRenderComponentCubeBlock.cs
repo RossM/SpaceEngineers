@@ -7,7 +7,6 @@ using VRageRender;
 using Sandbox.ModAPI;
 using Sandbox.Common;
 using Sandbox.Common.ObjectBuilders;
-using Sandbox.Common.ObjectBuilders.Voxels;
 using Sandbox.Definitions;
 using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
@@ -18,8 +17,9 @@ using System.Diagnostics;
 using System.Threading;
 
 using Sandbox.Game.Entities;
-using Sandbox.Common.Components;
+
 using Sandbox.Graphics;
+using VRage.Game;
 
 namespace Sandbox.Game.Components
 {
@@ -31,7 +31,7 @@ namespace Sandbox.Game.Components
         {
             m_cubeBlock = cubeBlock;
         }
-        public override bool DebugDraw()
+        public override void DebugDraw()
         {
             // Duplicit. Use MyFakes.DEBUG_DRAW_MODEL_DUMMIES;
             /*if (m_model != null)
@@ -57,8 +57,6 @@ namespace Sandbox.Game.Components
                 var worldMat = m_cubeBlock.CubeGrid.WorldMatrix;
                 MySimpleObjectDraw.DrawTransparentBox(ref worldMat, ref bbox, ref color, MySimpleObjectRasterizer.Wireframe, 1, 0.01f);
             }
-
-            return true;
         }
     }
 }

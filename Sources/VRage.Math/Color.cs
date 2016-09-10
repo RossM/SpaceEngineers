@@ -8,6 +8,7 @@ namespace VRageMath
     /// Represents a four-component color using red, green, blue, and alpha data.
     /// </summary>
     [ProtoBuf.ProtoContract, Serializable]
+	[Unsharper.UnsharperDisableReflection()]
     public struct Color : IPackedVector<uint>, IPackedVector, IEquatable<Color>
     {
         /// <summary>
@@ -1745,6 +1746,11 @@ namespace VRageMath
             return color;
         }
 
+        public static Color operator +(Color value, Color other)
+        {
+            return new Color(value.R + other.R, value.G + other.G, value.B + other.B, value.A + other.A);
+        }
+
         /// <summary>
         /// Equality operator.
         /// </summary>
@@ -1965,5 +1971,24 @@ namespace VRageMath
             get { return PackedValue; }
             set { PackedValue = value; }
         }
+
+        public static Color Lighten(Color inColor, double inAmount)
+        {
+            return new Color(
+              (int)Math.Min(255, inColor.R + 255 * inAmount),
+              (int)Math.Min(255, inColor.G + 255 * inAmount),
+              (int)Math.Min(255, inColor.B + 255 * inAmount),
+              inColor.A);
+        }
+
+        public static Color Darken(Color inColor, double inAmount)
+        {
+            return new Color(
+              (int)Math.Max(0, inColor.R - 255 * inAmount),
+              (int)Math.Max(0, inColor.G - 255 * inAmount),
+              (int)Math.Max(0, inColor.B - 255 * inAmount),
+              inColor.A);
+        }
+
     }
 }

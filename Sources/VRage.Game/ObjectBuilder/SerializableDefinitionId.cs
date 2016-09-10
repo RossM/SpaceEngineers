@@ -1,6 +1,5 @@
 ﻿using System.Xml.Serialization;
 using ProtoBuf;
-using Sandbox.Definitions;
 using VRage.Serialization;
 using VRage.Utils;
 
@@ -14,17 +13,36 @@ namespace VRage.ObjectBuilders
         public MyObjectBuilderType TypeId;
 
         [ProtoMember]
+        [XmlAttribute("Type")]
+        [NoSerialize]
+        public string TypeIdStringAttribute
+        {
+            get { return !TypeId.IsNull ? TypeId.ToString() : "(null)"; }
+            set { if (value != null) TypeIdString = value; }
+        }
+
+        [ProtoMember]
         [XmlElement("TypeId")]
         [NoSerialize]
         public string TypeIdString
         {
-            get { return TypeId.ToString(); }
+            get { return !TypeId.IsNull ? TypeId.ToString() : "(null)"; }
             set { TypeId = MyObjectBuilderType.ParseBackwardsCompatible(value); }
         }
+        public bool ShouldSerializeTypeIdString() { return false; }
 
         [XmlIgnore]
         [NoSerialize]
         public string SubtypeName;
+
+        [ProtoMember]
+        [XmlAttribute("Subtype")]
+        [NoSerialize]
+        public string SubtypeIdAttribute
+        {
+            get { return SubtypeName; }
+            set { SubtypeName = value; }
+        }
 
         [ProtoMember]
         [NoSerialize]
@@ -33,6 +51,8 @@ namespace VRage.ObjectBuilders
             get { return SubtypeName; }
             set { SubtypeName = value; }
         }
+
+        public bool ShouldSerializeSubtypeId() { return false; }
 
         [Serialize]
         private ushort m_binaryTypeId

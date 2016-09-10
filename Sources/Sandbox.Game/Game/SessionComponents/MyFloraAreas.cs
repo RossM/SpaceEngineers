@@ -16,6 +16,10 @@ using System.Linq;
 using System.Text;
 using VRage;
 using VRage.Collections;
+using VRage.Game;
+using VRage.Game.Components;
+using VRage.Game.Entity;
+using VRage.Game.Models;
 using VRage.Library.Utils;
 using VRage.Utils;
 using VRage.Voxels;
@@ -141,14 +145,12 @@ namespace Sandbox.Game.SessionComponents
         private int m_updateCounter;
 
         private MyVoxelBase m_ground;
-        private MyStorageDataCache m_voxelCache;
+        private MyStorageData m_voxelCache;
         private HashSet<MyStringHash> m_allowedMaterials;
 
         private double m_worldArea;
         private double m_currentForestArea;
         private double m_forestsPercent;
-
-        private MyRandom m_random;
 
         private Dictionary<long, MyEnvironmentItems> m_envItems;
         private List<Area> m_forestAreas;
@@ -242,8 +244,6 @@ namespace Sandbox.Game.SessionComponents
             m_tmpSectors = new List<Vector3I>();
 
             m_aabbTree = new MyDynamicAABBTreeD(Vector3D.Zero);
-
-            m_random = new MyRandom();
 
             // MW:TODO growing items on allowed materials
             m_allowedMaterials = new HashSet<MyStringHash>();
@@ -365,11 +365,11 @@ namespace Sandbox.Game.SessionComponents
             if (m_checkQueue.Count == 0)
             {
                 bool finishedLoading = true;
-                m_ground = MySession.Static.VoxelMaps.TryGetVoxelMapByName("Ground");
+                m_ground = MySession.Static.VoxelMaps.TryGetVoxelMapByNameStart("Ground");
                 if (m_ground != null)
                 {
                     m_worldArea = m_ground.SizeInMetres.X * m_ground.SizeInMetres.Z;
-                    m_voxelCache = new MyStorageDataCache();
+                    m_voxelCache = new MyStorageData();
                     m_voxelCache.Resize(Vector3I.One * 3);
 
                     InvalidateAreaValues();
@@ -448,11 +448,11 @@ namespace Sandbox.Game.SessionComponents
             var lineStart = new Vector3D(worldPos.X, groundBox.Max.Y, worldPos.Z);
             var lineEnd = new Vector3D(worldPos.X, groundBox.Min.Y, worldPos.Z);
             LineD line = new LineD(lineStart, lineEnd);
-            MyIntersectionResultLineTriangleEx? result = null;
+            VRage.Game.Models.MyIntersectionResultLineTriangleEx? result = null;
             var correctGroundDefinition = MyDefinitionManager.Static.GetVoxelMaterialDefinition("Grass");
             var materialId = correctGroundDefinition.Index;
 
-            if (m_ground.GetIntersectionWithLine(ref line, out result, VRage.Components.IntersectionFlags.DIRECT_TRIANGLES))
+            if (m_ground.GetIntersectionWithLine(ref line, out result, VRage.Game.Components.IntersectionFlags.DIRECT_TRIANGLES))
             {
                 Vector3D intersectionPoint = result.Value.IntersectionPointInWorldSpace;
                 Vector3I voxelCoord, minRead, maxRead;
@@ -463,7 +463,7 @@ namespace Sandbox.Game.SessionComponents
 
                 var minLocal = Vector3I.Zero;
                 var maxLocal = Vector3I.One * 2;
-                var it = new Vector3I.RangeIterator(ref minLocal, ref maxLocal);
+                var it = new Vector3I_RangeIterator(ref minLocal, ref maxLocal);
                 while (it.IsValid())
                 {
                     var vec = it.Current;
@@ -668,7 +668,7 @@ namespace Sandbox.Game.SessionComponents
         private BoundingBoxD GetWorldBox(MyStringHash id, MatrixD worldMatrix)
         {
             int modelId = MyEnvironmentItems.GetModelId(id);
-            var modelData = MyModels.GetModelOnlyData(MyModel.GetById(modelId));
+            var modelData = VRage.Game.Models.MyModels.GetModelOnlyData(MyModel.GetById(modelId));
             BoundingBoxD boxLocal = modelData.BoundingBox.Transform(ref worldMatrix);
             boxLocal.Inflate(0.6); // inflate so it takes a lil bit more space than normally
             boxLocal.Max.Y = DEBUG_BOX_Y_MAX_POS;
@@ -1077,7 +1077,7 @@ namespace Sandbox.Game.SessionComponents
             desiredHalfSize.Y = 0;
 
             int areaIdx = 0;
-            int randomStartIdx = m_random.Next() % m_tmpAreas.Count;
+            int randomStartIdx = MyUtils.GetRandomInt(m_tmpAreas.Count);
             while (areaIdx < m_tmpAreas.Count)
             {
                 var spawnArea = m_tmpAreas[randomStartIdx];
@@ -1181,7 +1181,7 @@ namespace Sandbox.Game.SessionComponents
                 }
 
                 int areaIdx = 0;
-                int randomStartIdx = m_random.Next() % m_tmpAreas.Count;
+                int randomStartIdx = MyUtils.GetRandomInt(m_tmpAreas.Count);
                 while (areaIdx < m_tmpAreas.Count)
                 {
                     var spawnArea = m_tmpAreas[randomStartIdx];
@@ -1381,7 +1381,7 @@ namespace Sandbox.Game.SessionComponents
                     {
                         VRageRender.MyRenderProxy.DebugDrawText3D(higherOrder.Center, "Gran: " + (int)(0.5f + higherOrder.Volume), Color.CadetBlue, 1.0f, true);
                         Color c = Color.Coral;
-                        Sandbox.Graphics.MySimpleObjectDraw.DrawTransparentBox(ref MatrixD.Identity, ref higherOrder, ref c, Sandbox.Graphics.MySimpleObjectRasterizer.Solid, 1);
+                        MySimpleObjectDraw.DrawTransparentBox(ref MatrixD.Identity, ref higherOrder, ref c, MySimpleObjectRasterizer.Solid, 1);
                     }
                 }
 

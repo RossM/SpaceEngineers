@@ -32,6 +32,36 @@ namespace VRageMath
         [ProtoBuf.ProtoMember]
         public float W;
 
+        public Vector3 Forward
+        {
+            get
+            {
+                Vector3 r;
+                GetForward(ref this, out r);
+                return r;
+            }
+        }
+
+        public Vector3 Right
+        {
+            get
+            {
+                Vector3 r;
+                GetRight(ref this, out r);
+                return r;
+            }
+        }
+
+        public Vector3 Up
+        {
+            get
+            {
+                Vector3 r;
+                GetUp(ref this, out r);
+                return r;
+            }
+        }
+
         static Quaternion()
         {
         }
@@ -562,6 +592,22 @@ namespace VRageMath
             CreateFromRotationMatrix(ref m, out result);
         }
 
+        public static void CreateFromTwoVectors(ref Vector3 firstVector, ref Vector3 secondVector, out Quaternion result)
+        {
+            Vector3 thirdVector;
+            Vector3.Cross(ref firstVector, ref secondVector, out thirdVector);
+            result = new Quaternion(thirdVector.X, thirdVector.Y, thirdVector.Z, Vector3.Dot(firstVector, secondVector));
+            result.W += result.Length();
+            result.Normalize();
+        }
+
+        public static Quaternion CreateFromTwoVectors(Vector3 firstVector, Vector3 secondVector)
+        {
+            Quaternion rtn;
+            CreateFromTwoVectors(ref firstVector, ref secondVector, out rtn);
+            return rtn;
+        }
+
         /// <summary>
         /// Creates a Quaternion from a rotation Matrix.
         /// </summary>
@@ -1032,5 +1078,61 @@ namespace VRageMath
             return Math.Abs(value.X) < epsilon && Math.Abs(value.Y) < epsilon && Math.Abs(value.Z) < epsilon && Math.Abs(value.W) < epsilon;
         }
 
+        /// <summary>
+        /// Gets forward vector (0,0,-1) transformed by quaternion.
+        /// </summary>
+        public static void GetForward(ref Quaternion q, out Vector3 result)
+        {
+            float num1 = q.X + q.X;
+            float num2 = q.Y + q.Y;
+            float num3 = q.Z + q.Z;
+            float num4 = q.W * num1;
+            float num5 = q.W * num2;
+            float num7 = q.X * num1;
+            float num9 = q.X * num3;
+            float num10 = q.Y * num2;
+            float num11 = q.Y * num3;
+            result.X = -num9 - num5;
+            result.Y = num4 - num11;
+            result.Z = num7 + num10 - 1.0f;
+        }
+
+        /// <summary>
+        /// Gets right vector (1,0,0) transformed by quaternion.
+        /// </summary>
+        public static void GetRight(ref Quaternion q, out Vector3 result)
+        {
+            float num1 = q.X + q.X;
+            float num2 = q.Y + q.Y;
+            float num3 = q.Z + q.Z;
+            float num5 = q.W * num2;
+            float num6 = q.W * num3;
+            float num8 = q.X * num2;
+            float num9 = q.X * num3;
+            float num10 = q.Y * num2;
+            float num12 = q.Z * num3;
+            result.X = 1.0f - num10 - num12;
+            result.Y = num8 + num6;
+            result.Z = num9 - num5;
+        }
+
+        /// <summary>
+        /// Gets up vector (0,1,0) transformed by quaternion.
+        /// </summary>
+        public static void GetUp(ref Quaternion q, out Vector3 result)
+        {
+            float num1 = q.X + q.X;
+            float num2 = q.Y + q.Y;
+            float num3 = q.Z + q.Z;
+            float num4 = q.W * num1;
+            float num6 = q.W * num3;
+            float num7 = q.X * num1;
+            float num8 = q.X * num2;
+            float num11 = q.Y * num3;
+            float num12 = q.Z * num3;
+            result.X = num8 - num6;
+            result.Y = 1.0f - num7 - num12;
+            result.Z = num11 + num4;
+        }
     }
 }

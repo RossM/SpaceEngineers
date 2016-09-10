@@ -1,4 +1,5 @@
-﻿#region Using
+﻿#if !XB1 // XB1_NOPROFILER
+#region Using
 
 using System;
 using System.Collections.Generic;
@@ -45,12 +46,15 @@ namespace VRage.Profiler
         public static readonly int MAX_FRAMES = 1024;
         public static readonly int UPDATE_WINDOW = 16; // 16 frames is reserved for update, so we don't need locking
 
+        private static readonly int INITIAL_PROFILER_BLOCK_COUNT = 2000;
+        private static readonly int PROFILER_BLOCK_INCREMENT_STEP = 100;
+
         private const int ROOT_ID = 0;
         private int m_nextId = 1;
         private Dictionary<MyProfilerBlockKey, MyProfilerBlock> m_profilingBlocks = new Dictionary<MyProfilerBlockKey, MyProfilerBlock>(8192, new MyProfilerBlockKeyComparer());
         private List<MyProfilerBlock> m_rootBlocks = new List<MyProfilerBlock>(32);
         private Stack<MyProfilerBlock> m_currentProfilingStack = new Stack<MyProfilerBlock>(1024);
-        private MyProfiler.MyProfilerBlock m_selectedRoot = null;
+        private MyProfilerBlock m_selectedRoot = null;
         private int m_levelLimit = -1;
         private int m_levelSkipCount;
         private volatile int m_newLevelLimit = -1;
@@ -73,7 +77,6 @@ namespace VRage.Profiler
         public bool AutoCommit = true;
 
         public readonly bool MemoryProfiling;
-        public readonly int GlobalProfilerIndex;
         public readonly Thread OwnerThread;
         public readonly Stopwatch Stopwatch = new Stopwatch();
 
@@ -82,6 +85,7 @@ namespace VRage.Profiler
         //very simple logging - it will create csv files with anything above ^^threshold into c:\keenswh dir
         private static readonly bool ENABLE_PROFILER_LOG = false;
 
+        private List<MyProfilerBlock> blockPool = new List<MyProfilerBlock>(INITIAL_PROFILER_BLOCK_COUNT);
 
         public MyProfilerBlock SelectedRoot
         {
@@ -92,6 +96,11 @@ namespace VRage.Profiler
         public List<MyProfilerBlock> SelectedRootChildren
         {
             get { return m_selectedRoot != null ? m_selectedRoot.Children : m_rootBlocks; }
+        }
+
+        public List<MyProfilerBlock> RootBlocks
+        {
+            get { return m_rootBlocks; }
         }
 
         public int LastFrameIndexDebug
@@ -130,16 +139,20 @@ namespace VRage.Profiler
             return ROOT_ID;
         }
 
-        public MyProfiler(int globalProfilerIndex, bool memoryProfiling, string name, string axisName)
+        public MyProfiler(bool memoryProfiling, string name, string axisName)
         {
-            GlobalProfilerIndex = globalProfilerIndex;
             OwnerThread = Thread.CurrentThread;
             MemoryProfiling = memoryProfiling;
             m_lastFrameIndex = MAX_FRAMES - 1;
             m_customName = name ?? OwnerThread.Name;
             m_axisName = axisName;
             if (ENABLE_PROFILER_LOG)
-                m_logWriter = new StreamWriter(@"c:\keenswh\profiler" + globalProfilerIndex + ".csv");
+                m_logWriter = new StreamWriter(@"c:\keenswh\profiler" + Thread.CurrentThread.ManagedThreadId + "_" + m_customName + ".csv");
+
+            for (int i = 0; i < 2000; i++)
+            {
+                blockPool.Add(new MyProfilerBlock());
+            }
         }
 
         /// <summary>
@@ -151,7 +164,7 @@ namespace VRage.Profiler
             Interlocked.Exchange(ref m_remainingWindow, UPDATE_WINDOW);
         }
 
-        public static MyProfiler.MyProfilerBlock CreateExternalBlock(string name, int blockId)
+        public static MyProfilerBlock CreateExternalBlock(string name, int blockId)
         {
             MyProfilerBlockKey key = new MyProfilerBlockKey(String.Empty, String.Empty, name, 0, ROOT_ID);
             return new MyProfilerBlock(ref key, String.Empty, blockId);
@@ -224,11 +237,11 @@ namespace VRage.Profiler
             m_levelLimit = m_newLevelLimit;
 
             int writeFrame = (m_lastFrameIndex + 1) % MyProfiler.MAX_FRAMES;
-            foreach (MyProfiler.MyProfilerBlock profilerBlock in m_profilingBlocks.Values)
+            foreach (MyProfilerBlock profilerBlock in m_profilingBlocks.Values)
             {
                 callCount += profilerBlock.NumCalls;
 
-                profilerBlock.ManagedMemory[writeFrame] = profilerBlock.ManagedDeltaMB;
+                profilerBlock.ManagedMemoryBytes[writeFrame] = profilerBlock.DeltaManagedB;
                 if (MemoryProfiling)
                 {
                     profilerBlock.ProcessMemory[writeFrame] = profilerBlock.ProcessDeltaMB;
@@ -249,7 +262,7 @@ namespace VRage.Profiler
                         m_logWriter.Write(((int)profilerBlock.Elapsed.Miliseconds).ToString());
                         m_logWriter.Write("; ");
                         m_logWriter.Write(profilerBlock.Name);
-                        MyProfiler.MyProfilerBlock tempBlock = profilerBlock;
+                        MyProfilerBlock tempBlock = profilerBlock;
                         while (tempBlock.Parent != null)
                         {
                             tempBlock = tempBlock.Parent;
@@ -273,9 +286,14 @@ namespace VRage.Profiler
             Debug.Assert(!EnableAsserts || OwnerThread == Thread.CurrentThread);
             Debug.Assert(m_currentProfilingStack.Count == 0, "ClearFrame cannot be called when there are some opened blocks, it must be outside blocks!");
 
+            m_currentProfilingStack.Clear();
+
+            if (m_blocksToAdd.Count > 0)
+                m_blocksToAdd.Clear();
+
             m_levelLimit = m_newLevelLimit;
 
-            foreach (MyProfiler.MyProfilerBlock profilerBlock in m_profilingBlocks.Values)
+            foreach (MyProfilerBlock profilerBlock in m_profilingBlocks.Values)
             {
                 profilerBlock.Clear();
             }
@@ -290,12 +308,14 @@ namespace VRage.Profiler
                     for (int i = 0; i < MAX_FRAMES; i++)
                     {
                         block.Value.ProcessMemory[i] = 0;
-                        block.Value.ManagedMemory[i] = 0;
+                        block.Value.ManagedMemoryBytes[i] = 0;
                         block.Value.Miliseconds[i] = 0;
                         block.Value.CustomValues[i] = 0;
                         block.Value.NumCallsArray[i] = 0;
                     }
                 }
+
+                m_lastFrameIndex = MAX_FRAMES - 1;
             }
         }
 
@@ -331,7 +351,16 @@ namespace VRage.Profiler
 
             if (!m_profilingBlocks.TryGetValue(key, out profilingBlock) && !m_blocksToAdd.TryGetValue(key, out profilingBlock))
             {
-                profilingBlock = new MyProfilerBlock(ref key, memberName, m_nextId++, forceOrder);
+                if (blockPool.Count == 0)
+                {
+                    for (int i = 0; i < PROFILER_BLOCK_INCREMENT_STEP; i++)
+                        blockPool.Add(new MyProfilerBlock());
+                }
+
+                profilingBlock = blockPool[0];
+                blockPool.RemoveAt(0);
+
+                profilingBlock.SetBlockData(ref key, m_nextId++, forceOrder);
 
                 if (m_currentProfilingStack.Count > 0)
                 {
@@ -401,5 +430,18 @@ namespace VRage.Profiler
             StartBlock(name, member, line, file);
             EndBlock(member, line, file, customTime, value, timeFormat, valueFormat, callFormat);
         }
+
+        public StringBuilder Dump()
+        {
+            var sb = new StringBuilder();
+
+            foreach (var block in m_rootBlocks)
+            {
+                block.Dump(sb, m_lastFrameIndex);
+            }
+
+            return sb;
+        }
     }
 }
+#endif // !XB1

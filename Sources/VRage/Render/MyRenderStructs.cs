@@ -163,6 +163,19 @@ namespace VRageRender
         public Vector3 Vertex2;
     }
 
+    public struct MyTriangle_BoneWeigths
+    {
+        public MyVertex_BoneWeight Vertex0;
+        public MyVertex_BoneWeight Vertex1;
+        public MyVertex_BoneWeight Vertex2;
+    }
+
+    public struct MyVertex_BoneWeight
+    {
+        public Vector3 Indices;
+        public Vector3 Weights;
+    }
+
     public struct MyTriangle_Normals
     {
         public Vector3 Normal0;
@@ -190,7 +203,14 @@ namespace VRageRender
         public HalfVector4 m_row1;
         public HalfVector4 m_row2;
         public HalfVector4 ColorMaskHSV;
-        public HalfVector2 UVOffset;
+
+        public MyInstanceData(Matrix m)
+        {
+            m_row0 = new HalfVector4(m.M11, m.M21, m.M31, m.M41);
+            m_row1 = new HalfVector4(m.M12, m.M22, m.M32, m.M42);
+            m_row2 = new HalfVector4(m.M13, m.M23, m.M33, m.M43);
+            ColorMaskHSV = new HalfVector4();
+        }
 
         public Matrix LocalMatrix
         {
@@ -214,6 +234,22 @@ namespace VRageRender
                 m_row2 = new HalfVector4(value.M13, value.M23, value.M33, value.M43);
             }
         }
+
+        public Vector3 Translation
+        {
+            get
+            {
+                return new Vector3(HalfUtils.Unpack((ushort)(m_row0.PackedValue >> 48)),
+                    HalfUtils.Unpack((ushort)(m_row1.PackedValue >> 48)),
+                    HalfUtils.Unpack((ushort)(m_row2.PackedValue >> 48)));
+            }
+            set
+            {
+                m_row0.PackedValue = (m_row0.PackedValue & 0xFFFFFFFFFFFF) | ((ulong)HalfUtils.Pack(value.X) << 48);
+                m_row1.PackedValue = (m_row1.PackedValue & 0xFFFFFFFFFFFF) | ((ulong)HalfUtils.Pack(value.Y) << 48);
+                m_row2.PackedValue = (m_row2.PackedValue & 0xFFFFFFFFFFFF) | ((ulong)HalfUtils.Pack(value.Z) << 48);
+            }
+        }
     }
 
     // We need to fit into 10 registers, so packing is necessary
@@ -225,7 +261,7 @@ namespace VRageRender
     // Total RAM size is 64 bytes
     public unsafe struct MyCubeInstanceData
     {
-        private fixed byte m_bones[32]; // 4 bytes per vector * 8 vectors = 32 bytes
+        private fixed byte m_bones[8*4]; // 4 bytes per vector * 8 vectors = 32 bytes
         public Vector4 m_translationAndRot;
         //If you want negative dithering, use SetColorMaskHSV instead!
         public Vector4 ColorMaskHSV;

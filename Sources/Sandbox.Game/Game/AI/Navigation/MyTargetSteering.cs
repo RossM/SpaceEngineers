@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using VRage.Game.Entity;
 using VRageMath;
 using VRageRender;
 
@@ -58,7 +59,7 @@ namespace Sandbox.Game.AI.Navigation
             else
             {
                 m_entity = relativeEntity;
-                m_target = Vector3D.Transform(target, m_entity.PositionComp.WorldMatrixInvScaled);
+                m_target = Vector3D.Transform(target, m_entity.PositionComp.WorldMatrixNormalizedInv);
             }
 
             m_capsuleRadiusSq = radius * radius;

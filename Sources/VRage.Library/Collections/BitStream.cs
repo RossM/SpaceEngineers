@@ -5,6 +5,8 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using VRage.Library.Utils;
+using SharpDX;
+using SharpDX.Mathematics;
 
 namespace VRage.Library.Collections
 {
@@ -77,7 +79,7 @@ namespace VRage.Library.Collections
 
         ~BitStream()
         {
-            Debug.Fail("Undisposed BitStream");
+         //   Debug.Fail("Undisposed BitStream");
             ReleaseInternalBuffer();
         }
 

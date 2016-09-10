@@ -1,7 +1,6 @@
 ﻿#region Using
 
 using Sandbox.Common;
-using Sandbox.Common.ModAPI;
 using Sandbox.Common.ObjectBuilders.Definitions;
 using Sandbox.Definitions;
 using Sandbox.Engine.Physics;
@@ -13,15 +12,18 @@ using Sandbox.Game.Lights;
 using Sandbox.Game.Multiplayer;
 using Sandbox.Game.World;
 using Sandbox.Game.GameSystems;
-using Sandbox.Graphics.TransparentGeometry.Particles;
 using Sandbox.ModAPI;
 using Sandbox.ModAPI.Interfaces;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using VRage.Components;
+using VRage.Game.Components;
 using VRage.Utils;
 using VRageMath;
+using VRage.Game.Entity;
+using VRage.Game;
+using VRage.Game.ModAPI;
+using VRage.Game.ModAPI.Interfaces;
 
 #endregion
 
@@ -37,6 +39,7 @@ namespace Sandbox.Game.Weapons
         MyExplosionTypeEnum m_explosionType;
         private MyEntity m_collidedEntity;
         Vector3D? m_collisionPoint;
+        Vector3 m_collisionNormal;
         long m_owner;
         private float m_smokeEffectOffsetMultiplier = 0.4f;
 
@@ -49,7 +52,7 @@ namespace Sandbox.Game.Weapons
             if (MySession.Static.Settings.RealisticSound && MyFakes.ENABLE_NEW_SOUNDS)
             {
                 Func<bool> expr = () =>
-                MySession.ControlledEntity != null && MySession.ControlledEntity.Entity is MyCharacter && MySession.ControlledEntity.Entity == m_collidedEntity;
+                MySession.Static.ControlledEntity != null && MySession.Static.ControlledEntity.Entity is MyCharacter && MySession.Static.ControlledEntity.Entity == m_collidedEntity;
                 m_soundEmitter.EmitterMethods[MyEntity3DSoundEmitter.MethodsEnum.ShouldPlay2D].Add(expr);
                 m_soundEmitter.EmitterMethods[MyEntity3DSoundEmitter.MethodsEnum.CanHear].Add(expr);
             }
@@ -98,7 +101,6 @@ namespace Sandbox.Game.Weapons
                 var matrix = PositionComp.WorldMatrix;
                 matrix.Translation -= matrix.Forward * m_smokeEffectOffsetMultiplier;
                 m_smokeEffect.WorldMatrix = matrix;
-                m_smokeEffect.AutoDelete = false;
                 m_smokeEffect.CalculateDeltaMatrix = true;
             }
 
@@ -121,11 +123,22 @@ namespace Sandbox.Game.Weapons
 
                 if (m_isExploded)
                 {
+                    Vector3D explosionPoint;
+                    if (m_collisionPoint.HasValue)
+                    {
+                        explosionPoint = PlaceDecal();
+                    }
+                    else
+                    {
+                        // Can have no collision point when exploding from cascade explosions
+                        explosionPoint = PositionComp.GetPosition();
+                    }
+
                     if (Sandbox.Game.Multiplayer.Sync.IsServer)
                     {
                         //  Create explosion
                         float radius = m_missileAmmoDefinition.MissileExplosionRadius;
-                        BoundingSphereD explosionSphere = new BoundingSphereD(m_collisionPoint.HasValue ? m_collisionPoint.Value : PositionComp.GetPosition(), radius);
+                        BoundingSphereD explosionSphere = new BoundingSphereD(explosionPoint, radius);
 
                         MyEntity ownerEntity = null;
                         var ownerId = Sync.Players.TryGetIdentity(m_owner);
@@ -145,7 +158,7 @@ namespace Sandbox.Game.Weapons
                             LifespanMiliseconds = MyExplosionsConstants.EXPLOSION_LIFESPAN,
                             CascadeLevel = CascadedExplosionLevel,
                             HitEntity = m_collidedEntity,
-                            ParticleScale = 0.2f,
+                            ParticleScale = 1.0f,
                             OwnerEntity = ownerEntity,
 
                             Direction = WorldMatrix.Forward,
@@ -180,7 +193,7 @@ namespace Sandbox.Game.Weapons
                 if (m_missileAmmoDefinition.MissileSkipAcceleration)
                     Physics.LinearVelocity = WorldMatrix.Forward * m_missileAmmoDefinition.DesiredSpeed * 0.7f;
                 else
-                    Physics.LinearVelocity += PositionComp.WorldMatrix.Forward * m_missileAmmoDefinition.MissileAcceleration * MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
+                    Physics.LinearVelocity += PositionComp.WorldMatrix.Forward * m_missileAmmoDefinition.MissileAcceleration * VRage.Game.MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
 
                 if (m_smokeEffect == null)
                 {
@@ -194,7 +207,6 @@ namespace Sandbox.Game.Weapons
                             matrix.Translation -= matrix.Forward * m_smokeEffectOffsetMultiplier;
                             m_smokeEffect.WorldMatrix = matrix;
                             //m_smokeEffect.WorldMatrix = PositionComp.WorldMatrix;
-                            m_smokeEffect.AutoDelete = false;
                             m_smokeEffect.CalculateDeltaMatrix = true;
                         }
                     }
@@ -211,6 +223,14 @@ namespace Sandbox.Game.Weapons
             {
                 VRageRender.MyRenderProxy.GetRenderProfiler().EndProfilingBlock();
             }
+        }
+
+        private Vector3D PlaceDecal()
+        {
+            Vector3D explosionPoint = m_collisionPoint.Value;
+            MyHitInfo hitInfo = new MyHitInfo() { Position = explosionPoint, Normal = m_collisionNormal };
+            MyDecals.HandleAddDecal(m_collidedEntity, hitInfo, this.m_missileAmmoDefinition.PhysicalMaterial);
+            return explosionPoint;
         }
 
         /// <summary>
@@ -281,6 +301,11 @@ namespace Sandbox.Game.Weapons
 
             if (!Sandbox.Game.Multiplayer.Sync.IsServer)
             {
+                m_collidedEntity = collidedEntity;
+                m_collisionPoint = value.Position;
+                m_collisionNormal = value.Normal;
+
+                PlaceDecal();
                 Close();
                 return;
             }
@@ -290,6 +315,7 @@ namespace Sandbox.Game.Weapons
             m_collidedEntity = collidedEntity;
             m_collidedEntity.OnClose += m_collidedEntity_OnClose;
             m_collisionPoint = value.Position;
+            m_collisionNormal = value.Normal;
 
             Explode();
         }
@@ -316,7 +342,7 @@ namespace Sandbox.Game.Weapons
             if (sync)
             {
                 if (Sync.IsServer)
-                    MySyncHelper.DoDamageSynced(this, damage, damageType, attackerId);
+                    MySyncDamage.DoDamageSynced(this, damage, damageType, attackerId);
             }
             else
             {
@@ -341,9 +367,10 @@ namespace Sandbox.Game.Weapons
             OnDestroy();
         }
 
-        void IMyDestroyableObject.DoDamage(float damage, MyStringHash damageType, bool sync, MyHitInfo? hitInfo, long attackerId)
+        bool IMyDestroyableObject.DoDamage(float damage, MyStringHash damageType, bool sync, MyHitInfo? hitInfo, long attackerId)
         {
             DoDamage(damage, damageType, sync, attackerId);
+            return true;
         }
 
         float IMyDestroyableObject.Integrity

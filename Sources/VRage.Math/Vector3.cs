@@ -6,6 +6,10 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security;
+#if XB1 // XB1_SYNC_SERIALIZER_NOEMIT
+using System.Reflection;
+using VRage.Reflection;
+#endif // XB1
 
 namespace VRageMath
 {
@@ -13,7 +17,12 @@ namespace VRageMath
     /// Defines a vector with three components.
     /// </summary>
     [ProtoBuf.ProtoContract, Serializable]
+	[Unsharper.UnsharperDisableReflection()]
+#if !XB1 // XB1_SYNC_SERIALIZER_NOEMIT
     public struct Vector3 : IEquatable<Vector3>
+#else // XB1
+    public struct Vector3 : IEquatable<Vector3>, IMySetGetMemberDataHelper
+#endif // XB1
     {
         public static Vector3 Zero = new Vector3();
         public static Vector3 One = new Vector3(1f, 1f, 1f);
@@ -379,6 +388,11 @@ namespace VRageMath
                 return false;
         }
 
+        public bool Equals(Vector3 other,float epsilon)
+        {
+            return Math.Abs(this.X - other.X) < epsilon && Math.Abs(this.Y - other.Y) < epsilon && Math.Abs(this.Z - other.Z) < epsilon;
+        }
+
         /// <summary>
         /// Returns a value that indicates whether the current instance is equal to a specified object.
         /// </summary>
@@ -585,6 +599,23 @@ namespace VRageMath
             vector3.Z = (float)value.Z * num;
             return vector3;
         }
+
+        public static bool GetNormalized(ref Vector3 value)
+        {
+            float length = (float)Math.Sqrt((double)value.X * (double)value.X + (double)value.Y * (double)value.Y + (double)value.Z * (double)value.Z);
+            if (length > 0.001f)
+            {
+                float num = 1f / length;
+                Vector3 vector3;
+                vector3.X = (float)value.X * num;
+                vector3.Y = (float)value.Y * num;
+                vector3.Z = (float)value.Z * num;
+                return true;
+            }
+
+            return false;
+        }
+
 
         /// <summary>
         /// Creates a unit vector from the specified vector, writing the result to a user-specified variable. The result is a vector one unit in length pointing in the same direction as the original vector.
@@ -1145,11 +1176,41 @@ namespace VRageMath
                      matrix.Translation;
         }
 
+        /**
+         * Transform the provided vector only about the rotation, scale and translation terms of a matrix.
+         * 
+         * This effectively treats the matrix as a 3x4 matrix and the input vector as a 4 dimensional vector with unit W coordinate.
+         */
+        public static void TransformNoProjection(ref Vector3 vector, ref Matrix matrix, out Vector3 result)
+        {
+            float x = (vector.X * matrix.M11 + vector.Y * matrix.M21 + vector.Z * matrix.M31) + matrix.M41;
+            float y = (vector.X * matrix.M12 + vector.Y * matrix.M22 + vector.Z * matrix.M32) + matrix.M42;
+            float z = (vector.X * matrix.M13 + vector.Y * matrix.M23 + vector.Z * matrix.M33) + matrix.M43;
+
+            result.X = x;
+            result.Y = y;
+            result.Z = z;
+        }
+
+        /**
+         * Transform the provided vector only about the rotation and scale terms of a matrix.
+         */
+        public static void RotateAndScale(ref Vector3 vector, ref Matrix matrix, out Vector3 result)
+        {
+            float x = (vector.X * matrix.M11 + vector.Y * matrix.M21 + vector.Z * matrix.M31);
+            float y = (vector.X * matrix.M12 + vector.Y * matrix.M22 + vector.Z * matrix.M32);
+            float z = (vector.X * matrix.M13 + vector.Y * matrix.M23 + vector.Z * matrix.M33);
+
+            result.X = x;
+            result.Y = y;
+            result.Z = z;
+        }
 
         // Transform (x, y, z, 1) by matrix, project result back into w=1.
         //D3DXVECTOR3* WINAPI D3DXVec3TransformCoord
         //  ( D3DXVECTOR3 *pOut, CONST D3DXVECTOR3 *pV, CONST D3DXMATRIX *pM );
 
+#if NATIVE_SUPPORT
         /// <summary>Native Interop Function</summary>
         [DllImport("d3dx9_43.dll", EntryPoint = "D3DXVec3TransformCoord", CallingConvention = CallingConvention.StdCall, PreserveSig = true), SuppressUnmanagedCodeSecurityAttribute]
         private unsafe extern static Vector3* D3DXVec3TransformCoord_([Out] Vector3* pOut, [In] Vector3* pV,[In] Matrix* pM);
@@ -1165,7 +1226,7 @@ namespace VRageMath
                     D3DXVec3TransformCoord_(resultRef_, posRef_, matRef_);
             }
         }
-
+#endif
 
 
 
@@ -1259,6 +1320,12 @@ namespace VRageMath
             result = - normal.X * Base6Directions.GetVector(orientation.Left)
                      + normal.Y * Base6Directions.GetVector(orientation.Up)
                      - normal.Z * Base6Directions.GetVector(orientation.Forward);
+        }
+
+        public static Vector3 TransformNormal(Vector3 normal, ref Matrix matrix)
+        {
+            TransformNormal(ref normal, ref matrix, out normal);
+            return normal;
         }
 
         /// <summary>
@@ -1737,6 +1804,41 @@ namespace VRageMath
                 default: SetDim((i % 3 + 3) % 3, value); break;  // reduce to 0..2
             }
         }
+
+        public static Vector3 Ceiling(Vector3 v)
+        {
+            return new Vector3(Math.Ceiling(v.X), Math.Ceiling(v.Y), Math.Ceiling(v.Z));
+        }
+
+        public static Vector3 Floor(Vector3 v)
+        {
+            return new Vector3(Math.Floor(v.X), Math.Floor(v.Y), Math.Floor(v.Z));
+        }
+
+        public static Vector3 Round(Vector3 v)
+        {
+            return new Vector3(Math.Round(v.X), Math.Round(v.Y), Math.Round(v.Z));
+        }
+
+        public static Vector3 Round(Vector3 v,int numDecimals)
+        {
+            return new Vector3(Math.Round(v.X, numDecimals), Math.Round(v.Y, numDecimals), Math.Round(v.Z, numDecimals));
+        }
+
+#if XB1 // XB1_SYNC_SERIALIZER_NOEMIT
+        public object GetMemberData(MemberInfo m)
+        {
+            if (m.Name == "X")
+                return X;
+            if (m.Name == "Y")
+                return Y;
+            if (m.Name == "Z")
+                return Z;
+
+            System.Diagnostics.Debug.Assert(false, "TODO for XB1.");
+            return null;
+        }
+#endif // XB1
     }
 
     public static class NullableVector3Extensions

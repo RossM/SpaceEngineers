@@ -1,5 +1,9 @@
 ﻿using System;
 using System.Globalization;
+#if XB1 // XB1_SYNC_SERIALIZER_NOEMIT
+using System.Reflection;
+using VRage.Reflection;
+#endif // XB1
 
 namespace VRageMath
 {
@@ -7,7 +11,11 @@ namespace VRageMath
     /// Defines a vector with four components.
     /// </summary>
     [ProtoBuf.ProtoContract, Serializable]
+#if !XB1 // XB1_SYNC_SERIALIZER_NOEMIT
     public struct Vector4 : IEquatable<Vector4>
+#else // XB1
+    public struct Vector4 : IEquatable<Vector4>, IMySetGetMemberDataHelper
+#endif // XB1
     {
         public static Vector4 Zero = new Vector4();
         public static Vector4 One = new Vector4(1f, 1f, 1f, 1f);
@@ -1252,5 +1260,57 @@ namespace VRageMath
             result.Z = value1.Z * num;
             result.W = value1.W * num;
         }
+
+        // Linear to sRGB and back approximated conversions, see:
+        // http://chilliant.blogspot.cz/2012/08/srgb-approximations-for-hlsl.html
+        public static float ToLinearRGBComponent(float c)
+        {
+            return (float)Math.Pow(c, 2.2f);
+            //return c * (c * (c * 0.305306011f + 0.682171111f) + 0.012522878f);
+        }
+        public Vector4 ToLinearRGB()
+        {
+            return new Vector4(ToLinearRGBComponent(X), ToLinearRGBComponent(Y), ToLinearRGBComponent(Z), ToLinearRGBComponent(W));
+        }
+
+        public static float ToSRGBComponent(float c)
+        {
+            return (float)Math.Pow(c, 1 / 2.2f);
+            /*double S1 = Math.Sqrt(c);
+            double S2 = Math.Sqrt(S1);
+            double S3 = Math.Sqrt(S2);
+            double sRGB = Math.Max(0.662002687 * S1 + 0.684122060 * S2 - 0.323583601 * S3 - 0.0225411470 * c, 0);
+            return (float)sRGB;*/
+        }
+        public Vector4 ToSRGB()
+        {
+            return new Vector4(ToSRGBComponent(X), ToSRGBComponent(Y), ToSRGBComponent(Z), ToSRGBComponent(W));
+        }
+        public Vector4 UnmultiplyColor()
+        {
+            if (W == 0)
+                return Vector4.Zero;
+            return new Vector4(X / W, Y / W, Z / W, W);
+        }
+        public Vector4 PremultiplyColor()
+        {
+            return new Vector4(X * W, Y * W, Z * W, W);
+        }
+#if XB1 // XB1_SYNC_SERIALIZER_NOEMIT
+        public object GetMemberData(MemberInfo m)
+        {
+            if (m.Name == "X")
+                return X;
+            if (m.Name == "Y")
+                return Y;
+            if (m.Name == "Z")
+                return Z;
+            if (m.Name == "W")
+                return W;
+
+            System.Diagnostics.Debug.Assert(false, "TODO for XB1.");
+            return null;
+        }
+#endif // XB1
     }
 }

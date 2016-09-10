@@ -2,21 +2,16 @@
 using System.Collections.Generic;
 using Havok;
 using Sandbox.Definitions;
-using Sandbox.Engine.Models;
-using Sandbox.Engine.Utils;
-using Sandbox.Game.World;
 
 using VRage;
-using VRage.Generics;
 using VRage.Utils;
-using VRage.Trace;
 using VRageMath;
-using VRageRender;
-using Sandbox.Common;
-using Sandbox.Graphics;
 using System.Linq;
 using Sandbox.Engine.Physics;
-using VRage;
+using VRage.Game;
+using VRage.Game.Components;
+using VRage.Game.Models;
+using VRage.Game.Entity;
 
 namespace Sandbox.Game.Entities.Debris
 {
@@ -81,8 +76,8 @@ namespace Sandbox.Game.Entities.Debris
             //    "Models\\Debris\\Debris31.mwm",
             //};
 
-            m_debrisModels = MyDefinitionManager.Static.GetDebrisDefinitions().Where(x => x.Type == Common.ObjectBuilders.Definitions.MyDebrisType.Model).Select(x => x.Model).ToArray();
-            m_debrisVoxels = MyDefinitionManager.Static.GetDebrisDefinitions().Where(x => x.Type == Common.ObjectBuilders.Definitions.MyDebrisType.Voxel).Select(x => x.Model).ToArray();
+            m_debrisModels = MyDefinitionManager.Static.GetDebrisDefinitions().Where(x => x.Type == MyDebrisType.Model).Select(x => x.Model).ToArray();
+            m_debrisVoxels = MyDefinitionManager.Static.GetDebrisDefinitions().Where(x => x.Type == MyDebrisType.Voxel).Select(x => x.Model).ToArray();
         }
 
         public override Type[] Dependencies
@@ -113,8 +108,16 @@ namespace Sandbox.Game.Entities.Debris
         {
             if (model.HavokCollisionShapes != null && model.HavokCollisionShapes.Length > 0)
             {
-                HkShape sh = model.HavokCollisionShapes[0];
-                sh.AddReference();
+                HkShape sh;
+                if (model.HavokCollisionShapes.Length == 1)
+                {
+                    sh = model.HavokCollisionShapes[0];
+                    sh.AddReference();
+                }
+                else
+                {
+                    sh = new HkListShape(model.HavokCollisionShapes,HkReferencePolicy.None);
+                }
                 return sh;          
             }
 
@@ -193,7 +196,7 @@ namespace Sandbox.Game.Entities.Debris
             MyDebug.AssertDebug(debrisPieces > 0);
             for (int i = 0; i < debrisPieces; ++i)
             {
-                var newObj = CreateDebris();
+                var newObj = CreateRandomDebris();
                 if (newObj == null)
                 {
                     break; // no point in continuing
@@ -258,7 +261,7 @@ namespace Sandbox.Game.Entities.Debris
             float scale = Math.Max((float)explosionSphere.Radius, 0.35f) * scaleMultiplier;
             foreach (Vector3D positionInWorldSpace in m_positionBuffer)
             {
-                var newObj = CreateDebris();
+                var newObj = CreateRandomDebris();
                 if (newObj == null)
                 {
                     break; // no point in continuing
@@ -408,35 +411,34 @@ namespace Sandbox.Game.Entities.Debris
             var newObj = new MyDebrisVoxel();
             m_desc.Model = m_debrisVoxels[m_voxelDebrisModelIndex];
             m_voxelDebrisModelIndex++;
-            if (m_voxelDebrisModelIndex >= m_debrisVoxels.Count())
-            {
-                m_voxelDebrisModelIndex = 0;
-            }
+            m_voxelDebrisModelIndex %= m_debrisVoxels.Length;
 
             newObj.Debris.Init(m_desc);
             m_debrisCount++;
             return newObj;
         }
 
-        private MyDebrisBase CreateDebris()
+        private MyDebrisBase CreateRandomDebris()
         {
             if (m_debrisCount > MaxDebrisCount)
                 return null;
+            var debris = (MyDebrisBase)CreateDebris(m_debrisModels[m_debrisModelIndex]);
+            m_debrisModelIndex++;
+            m_debrisModelIndex %= m_debrisModels.Length;
+            return debris;
+        }
+
+
+        public MyEntity CreateDebris(string model)
+        {
             m_desc.ScaleMin = MyDebrisConstants.EXPLOSION_MODEL_DEBRIS_INITIAL_SCALE_MIN;
             m_desc.ScaleMax = MyDebrisConstants.EXPLOSION_MODEL_DEBRIS_INITIAL_SCALE_MAX;
 
             var newObj = new MyDebrisBase();
-            m_desc.Model = m_debrisModels[m_debrisModelIndex];
-            m_debrisModelIndex++;
-            if (m_debrisModelIndex >= m_debrisModels.Count())
-            {
-                m_debrisModelIndex = 0;
-            }
-
+            m_desc.Model = model;
             newObj.Debris.Init(m_desc);
             m_debrisCount++;
             return newObj;
         }
-
     }
 }

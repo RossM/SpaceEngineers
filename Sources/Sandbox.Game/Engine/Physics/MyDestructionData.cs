@@ -18,6 +18,8 @@ using System.Diagnostics;
 using Sandbox.Engine.Utils;
 using VRage.Library.Utils;
 using VRage.FileSystem;
+using VRage.Game.Components;
+using VRage.Game.Models;
 
 namespace Sandbox
 {
@@ -26,13 +28,6 @@ namespace Sandbox
     {
         private static List<HkdShapeInstanceInfo> m_tmpChildrenList = new List<HkdShapeInstanceInfo>();
         private static MyPhysicsMesh m_tmpMesh = new MyPhysicsMesh();
-
-        private static readonly MyStringId GENERATED_BLOCK_TYPE_PILLAR = MyStringId.GetOrCompute("pillar");
-        private static readonly MyStringId GENERATED_BLOCK_TYPE_ARC_LEFT = MyStringId.GetOrCompute("arcleft");
-        private static readonly MyStringId GENERATED_BLOCK_TYPE_ARC_RIGHT = MyStringId.GetOrCompute("arcright");
-        private static readonly MyStringId GENERATED_BLOCK_TYPE_BATTLEMENT_EDGE_LEFT = MyStringId.GetOrCompute("battlementedgeleft");
-        private static readonly MyStringId GENERATED_BLOCK_TYPE_BATTLEMENT_EDGE_RIGHT = MyStringId.GetOrCompute("battlementedgeright");
-        private static readonly MyStringId GENERATED_BLOCK_TYPE_BATTLEMENT_TRIANGLE_EDGE = MyStringId.GetOrCompute("battlementtriangleedge");
 
         public static MyDestructionData Static { get; set; }
         public HkWorld TemporaryWorld { get; private set; }
@@ -83,7 +78,7 @@ namespace Sandbox
 
                     if (group.Large != null)
                     {
-                        var model = MyModels.GetModel(group.Large.Model);
+                        var model = VRage.Game.Models.MyModels.GetModel(group.Large.Model);
                         if (model == null)
                             continue;
 
@@ -92,7 +87,7 @@ namespace Sandbox
                        
                        foreach(var progress in group.Large.BuildProgressModels)
                        {
-                           model = MyModels.GetModel(progress.File);
+                           model = VRage.Game.Models.MyModels.GetModel(progress.File);
                            if (model == null)
                                continue;
 
@@ -114,7 +109,7 @@ namespace Sandbox
 
                     if (group.Small != null)
                     {
-                        var model = MyModels.GetModel(group.Small.Model);
+                        var model = VRage.Game.Models.MyModels.GetModel(group.Small.Model);
                         if (model == null)
                             continue;
 
@@ -123,7 +118,7 @@ namespace Sandbox
 
                         foreach (var progress in group.Small.BuildProgressModels)
                         {
-                            model = MyModels.GetModel(progress.File);
+                            model = VRage.Game.Models.MyModels.GetModel(progress.File);
                             if (model == null)
                                 continue;
                             if (!MyFakes.LAZY_LOAD_DESTRUCTION || (model != null && model.HavokBreakableShapes != null)) //reload materials
@@ -145,9 +140,9 @@ namespace Sandbox
                     BlockShapePool.Preallocate();
             }
 
-            foreach (var enviroment in MyDefinitionManager.Static.GetEnvironmentItemDefinitions())
+            foreach (var def in MyDefinitionManager.Static.GetAllDefinitions<MyPhysicalModelDefinition>())
             {
-                LoadModelDestruction(enviroment.Model, enviroment, Vector3.One, false, true);
+                LoadModelDestruction(def.Model, def, Vector3.One, false, true);
             }
         }
 
@@ -172,7 +167,7 @@ namespace Sandbox
         {
             string moddedSplitPlane = splitPlane;
 
-            var model = MyModels.GetModelOnlyData(moddedSplitPlane);
+            var model = VRage.Game.Models.MyModels.GetModelOnlyData(moddedSplitPlane);
             if (model != null)
             {
                 var physicsMesh = CreatePhysicsMesh(model);
@@ -234,7 +229,7 @@ namespace Sandbox
 
                     geometry = CreateGeometryFromSplitPlane(splitPlane);
 
-                    var pspm = MyModels.GetModel(splitPlane);
+                    var pspm = VRage.Game.Models.MyModels.GetModel(splitPlane);
 
                     if (geometry != null)
                     {
@@ -263,7 +258,7 @@ namespace Sandbox
 
                 //    geometry = CreateGeometryFromSplitPlane(splitPlane);
 
-                //    var pspm = MyModels.GetModel(splitPlane);
+                //    var pspm = VRage.Game.Models.MyModels.GetModel(splitPlane);
 
                 //    if (geometry != null)
                 //    {
@@ -361,13 +356,15 @@ namespace Sandbox
 
         public void LoadModelDestruction(string modelName, MyPhysicalModelDefinition modelDef, Vector3 defaultSize, bool destructionRequired = true, bool useShapeVolume = false)
         {
-            var model = MyModels.GetModelOnlyData(modelName);
+            var model = VRage.Game.Models.MyModels.GetModelOnlyData(modelName);
+
+            if (model.HavokBreakableShapes != null) return;
 
             bool dontCreateFracturePieces = false;
             MyCubeBlockDefinition blockDefinition = modelDef as MyCubeBlockDefinition;
             if (blockDefinition != null)
             {
-                dontCreateFracturePieces = IsGeneratedBlockWithDisabledShapes(blockDefinition);
+                dontCreateFracturePieces = !blockDefinition.CreateFracturedPieces;
             }
 
             var material = modelDef.PhysicalMaterial;
@@ -575,9 +572,7 @@ namespace Sandbox
             {
                 m_physicalMaterials = new Dictionary<string, MyPhysicalMaterialDefinition>();
                 foreach (var physMat in MyDefinitionManager.Static.GetPhysicalMaterialDefinitions())
-                {
                     m_physicalMaterials.Add(physMat.Id.SubtypeName, physMat);
-                }
 
                 m_physicalMaterials["Default"] = new MyPhysicalMaterialDefinition()
                 {
@@ -585,13 +580,8 @@ namespace Sandbox
                     HorisontalTransmissionMultiplier = 1,
                     HorisontalFragility = 2,
                     CollisionMultiplier = 1.4f,
-                    SupportMultiplier = 1.5f             
+                    SupportMultiplier = 1.5f,
                 };
-            }
-
-            if(MyPerGameSettings.Destruction == false)
-            {
-              return m_physicalMaterials["Default"];
             }
 
             if (!string.IsNullOrEmpty(physicalMaterial))
@@ -609,17 +599,17 @@ namespace Sandbox
             //MyLog.Default.WriteLine("WARNING: " + modelDef.Id.SubtypeName + " has no physical material specified, trying to autodetect from name");
 
 
-            if (modelDef.Id.SubtypeName.Contains("Stone"))
+            if (modelDef.Id.SubtypeName.Contains("Stone") && m_physicalMaterials.ContainsKey("Stone"))
             {
                 return m_physicalMaterials["Stone"];
             }
 
-            if (modelDef.Id.SubtypeName.Contains("Wood"))
+            if (modelDef.Id.SubtypeName.Contains("Wood") && m_physicalMaterials.ContainsKey("Wood"))
             {
                 return m_physicalMaterials["Wood"];
             }
 
-            if (modelDef.Id.SubtypeName.Contains("Timber"))
+            if (modelDef.Id.SubtypeName.Contains("Timber") && m_physicalMaterials.ContainsKey("Timber"))
             {
                 return m_physicalMaterials["Wood"];
             }
@@ -695,18 +685,6 @@ namespace Sandbox
             var mass = sh.GetMass();
             BlockShapePool.EnqueShape(model, def.Id, sh);
             return mass;    // (OM) NOTE: this currently returns havok mass, we use MyDestructionHelper.MassFromHavok to recompute, if you change to use it here, check this method usage, whether this is not already converted somewhere
-        }
-
-        private static bool IsGeneratedBlockWithDisabledShapes(MyCubeBlockDefinition blockDefinition)
-        {
-            return blockDefinition.IsGeneratedBlock && (
-                blockDefinition.GeneratedBlockType == GENERATED_BLOCK_TYPE_PILLAR
-                || blockDefinition.GeneratedBlockType == GENERATED_BLOCK_TYPE_ARC_LEFT
-                || blockDefinition.GeneratedBlockType == GENERATED_BLOCK_TYPE_ARC_RIGHT
-                || blockDefinition.GeneratedBlockType == GENERATED_BLOCK_TYPE_BATTLEMENT_EDGE_LEFT
-                || blockDefinition.GeneratedBlockType == GENERATED_BLOCK_TYPE_BATTLEMENT_EDGE_RIGHT
-                || blockDefinition.GeneratedBlockType == GENERATED_BLOCK_TYPE_BATTLEMENT_TRIANGLE_EDGE
-                );
         }
     }
 }

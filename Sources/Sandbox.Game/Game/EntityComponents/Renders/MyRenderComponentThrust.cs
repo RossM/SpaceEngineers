@@ -5,18 +5,16 @@ using System.Text;
 using VRageMath;
 using VRageRender;
 using Sandbox.Game.World;
-using Sandbox.Graphics.TransparentGeometry;
 using Sandbox.Game.Entities;
-using Sandbox.Common.Components;
+
 using Sandbox.Common.ObjectBuilders;
 using VRage.Utils;
 using Sandbox.Engine.Utils;
 using VRage;
-using VRage;
-using VRage.Components;
+using VRage.Game.Components;
 using Sandbox.Engine.Physics;
-using Sandbox.Graphics.TransparentGeometry.Particles;
 using VRage.Library.Utils;
+using VRage.Game;
 
 namespace Sandbox.Game.Components
 {
@@ -54,9 +52,9 @@ namespace Sandbox.Game.Components
 
         public override void Draw()
         {
-            base.Draw();            
+            base.Draw();
 
-            var worldToLocal = MatrixD.Invert(Container.Entity.PositionComp.WorldMatrix);
+            var worldToLocal = MatrixD.Normalize(MatrixD.Invert(Container.Entity.PositionComp.WorldMatrix));
 
 			if (m_thrust.CanDraw())
 			{
@@ -68,12 +66,13 @@ namespace Sandbox.Game.Components
 					if (m_thrust.CubeGrid.Physics == null)
 						continue;
 
-					var flameDirection = Vector3D.TransformNormal(flame.Direction, Container.Entity.PositionComp.WorldMatrix);
-					var flamePosition = Vector3D.Transform(flame.Position, Container.Entity.PositionComp.WorldMatrix);
-
-					float radius = m_thrust.ThrustRadiusRand * flame.Radius;
-					float length = m_thrust.ThrustLengthRand * flame.Radius;
-					float thickness = m_thrust.ThrustThicknessRand * flame.Radius;
+				    MyCubeBlock cubeBlock = Container.Entity as MyCubeBlock;
+                    float scale = cubeBlock != null ? cubeBlock.CubeGrid.GridScale : 1.0f;
+                    var flameDirection = Vector3D.TransformNormal(flame.Direction, Container.Entity.PositionComp.WorldMatrix);
+                    var flamePosition = Vector3D.Transform(flame.Position, Container.Entity.PositionComp.WorldMatrix);
+                    float radius = m_thrust.ThrustRadiusRand * flame.Radius * scale;
+                    float length = m_thrust.ThrustLengthRand * flame.Radius * scale;
+                    float thickness = m_thrust.ThrustThicknessRand * flame.Radius * scale;
 
 					Vector3D velocityAtNewCOM = Vector3D.Cross(m_thrust.CubeGrid.Physics.AngularVelocity, flamePosition - m_thrust.CubeGrid.Physics.CenterOfMassWorld);
 					var velocity = m_thrust.CubeGrid.Physics.LinearVelocity + velocityAtNewCOM;
@@ -91,22 +90,26 @@ namespace Sandbox.Game.Components
 					if (radius > 0)
 						MyTransparentGeometry.AddPointBillboard(m_thrust.FlamePointMaterial, m_thrust.ThrustColor, flamePosition, GetRenderObjectID(), ref worldToLocal, radius, 0);
 
-					if (m_landingEffectUpdateCounter-- <= 0)
+                    if (m_thrust.ThrustLengthRand > MyMathConstants.EPSILON && m_landingEffectUpdateCounter-- <= 0)
 					{
 						m_landingEffectUpdateCounter = (int)Math.Round(m_landingEffectUpdateInterval * (0.8f + MyRandom.Instance.NextFloat() * 0.4f));
 
 						m_lastHitInfo = MyPhysics.CastRay(flamePosition,
 							flamePosition + flameDirection * m_thrust.ThrustLengthRand * (m_thrust.CubeGrid.GridSizeEnum == MyCubeSize.Large ? 5.0f : 3.0f) * flame.Radius,
-							MyPhysics.ObjectDetectionCollisionLayer);
+                            MyPhysics.CollisionLayers.DefaultCollisionLayer);
 					}
 
-					if (m_landingEffect != null)
+					var voxelBase = m_lastHitInfo.HasValue ? m_lastHitInfo.Value.HkHitInfo.GetHitEntity() as MyVoxelPhysics : null;
+					if (voxelBase == null)
 					{
-						m_landingEffect.Stop(true);
-						m_landingEffect = null;
-						--m_landingEffectCount;
+						if (m_landingEffect != null)
+						{
+							m_landingEffect.Stop();
+							m_landingEffect = null;
+							--m_landingEffectCount;
+						}
+						continue;
 					}
-					continue;
 
 					if (m_landingEffect == null && m_landingEffectCount < m_maxNumberLandingEffects && MyParticlesManager.TryCreateParticleEffect(54, out m_landingEffect))
 					{
@@ -118,11 +121,12 @@ namespace Sandbox.Game.Components
 
 					m_landingEffect.UserScale = m_thrust.CubeGrid.GridSize;
 					m_landingEffect.WorldMatrix = MatrixD.CreateFromTransformScale(Quaternion.CreateFromForwardUp(-m_lastHitInfo.Value.HkHitInfo.Normal, Vector3.CalculatePerpendicularVector(m_lastHitInfo.Value.HkHitInfo.Normal)), m_lastHitInfo.Value.Position, Vector3D.One);
+				    MatrixD.Rescale(m_landingEffect.WorldMatrix, scale);
 				}
 			}
 			else if(m_landingEffect != null)
 			{
-				m_landingEffect.Stop(true);
+				m_landingEffect.Stop();
 				m_landingEffect = null;
 				--m_landingEffectCount;
 			}

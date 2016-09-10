@@ -5,9 +5,8 @@ using System.Text;
 using VRageMath;
 using VRageRender;
 using Sandbox.Game.World;
-using Sandbox.Graphics.TransparentGeometry;
 using Sandbox.Game.Entities;
-using Sandbox.Common.Components;
+
 using Sandbox.Common.ObjectBuilders;
 using VRage.Utils;
 using Sandbox.Engine.Utils;
@@ -24,11 +23,10 @@ namespace Sandbox.Game.Components
             m_thrust = thrust;
         }
 
-        public override bool DebugDraw()
+        public override void DebugDraw()
         {
             //if (MyFakes.DEBUG_DRAW_THRUSTER_DAMAGE)
             DebugDrawDamageArea();
-            return true;
         }
         private void DebugDrawDamageArea()
         {

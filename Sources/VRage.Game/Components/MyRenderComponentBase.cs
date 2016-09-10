@@ -4,7 +4,7 @@ using VRage.ObjectBuilders;
 using VRageMath;
 using VRageRender;
 
-namespace VRage.Components
+namespace VRage.Game.Components
 {
     public abstract class MyRenderComponentBase : MyEntityComponentBase
     {
@@ -21,6 +21,7 @@ namespace VRage.Components
 
         protected Color m_diffuseColor = Color.White;  //diffuse color multiplier
 
+        public int LastMomentUpdateIndex = -1;
         /// <summary>
         /// Used by game to store model here. In game this is always of type MyModel.
         /// Implementation should only store and return passed object.
@@ -106,7 +107,7 @@ namespace VRage.Components
                 var m = Container.Entity.PositionComp.WorldMatrix;//Container.Get<MyPositionComponentBase>().WorldMatrix;
                 foreach (uint renderObjectID in m_renderObjectIDs)
                 {
-                    VRageRender.MyRenderProxy.UpdateRenderObject(renderObjectID, ref m, sortIntoCullobjects);
+                    VRageRender.MyRenderProxy.UpdateRenderObject(renderObjectID, ref m, sortIntoCullobjects, null, LastMomentUpdateIndex);
                 }
             }
         }
@@ -405,7 +406,15 @@ namespace VRage.Components
             }
         }
 
+        public bool OffsetInVertexShader
+        {
+            get;
+            set;
+        }
+
         public float Transparency;
+
+        public byte DepthBias = 0;
 
         public virtual RenderFlags GetRenderFlags()
         {
@@ -426,6 +435,7 @@ namespace VRage.Components
 				renderFlags |= RenderFlags.DrawOutsideViewDistance;
             if (ShadowBoxLod)
 				renderFlags |= RenderFlags.ShadowLodBox;
+
             return renderFlags;
         }
 

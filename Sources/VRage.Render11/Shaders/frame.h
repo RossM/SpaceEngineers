@@ -1,8 +1,10 @@
 #ifndef FRAME_CONSTANTS__
 #define FRAME_CONSTANTS__
 #include <common.h>
+#include <Math/math.h>
 
-struct FrameConstants {
+struct FrameConstants 
+{
 	//
 	matrix 	view_projection_matrix;
 	matrix	view_matrix;
@@ -14,8 +16,14 @@ struct FrameConstants {
 	matrix 	view_projection_matrix_world;
 	float4	world_offset;
 
-	float2	resolution;
+	// used in stereo rendering:
+	float3  eye_offset_in_world;
+	float   _paddingX;
 
+	int2    offset_in_gbuffer;
+	int2    resolution_of_gbuffer;
+
+	float2	resolution;
 	float 	time;
 	float 	timedelta;
 	//
@@ -55,8 +63,17 @@ struct FrameConstants {
 
 	float3  directionalLightVec;
 	float 	skyboxBlend;
+
 	float3 	directionalLightColor;
 	float 	forwardPassAmbient;
+
+    float3  additionalSunColor;
+    float   additionalSunIntensity;
+
+    float4  additionalSunDirection[MAX_ADDITIONAL_SUNS];
+
+    int     additionalSunsInUse;
+    float3  _padding1;
 
 	float 	tonemapping_A;
 	float 	tonemapping_B;
@@ -73,7 +90,8 @@ struct FrameConstants {
 
 	float skyboxBrightness;
 	float shadowFadeout;
-	float2 _padding;
+	float 	frameTimeDelta;
+	float   randomSeed;
 
 	float EnableVoxelAo;
 	float VoxelAoMin;
@@ -81,6 +99,11 @@ struct FrameConstants {
 	float VoxelAoOffset;
 
 	matrix background_orientation;
+
+    TextureDebugMultipliersType TextureDebugMultipliers;
+
+	float3  cameraPositionDelta;
+	float   _padding2;
 };
 
 cbuffer Frame : register( MERGE(b,FRAME_SLOT) )
@@ -88,10 +111,20 @@ cbuffer Frame : register( MERGE(b,FRAME_SLOT) )
 	FrameConstants frame_;
 };
 
+float3 view_to_world(float3 view)
+{
+    return mul(view, (float3x3)frame_.inv_view_matrix);
+}
+
+float3 world_to_view(float3 world)
+{
+    return mul(world, (float3x3)frame_.view_matrix);
+}
+
 float2 screen_to_uv(float2 screencoord)
 {
 	const float2 invres = 1 / frame_.resolution;
-	return screencoord * invres;
+	return (screencoord - frame_.offset_in_gbuffer) * invres;
 }
 
 float3 get_camera_position()
@@ -99,22 +132,25 @@ float3 get_camera_position()
 	return 0;
 }
 
-#include <math.h>
+float3 GetEyeCenterPosition()
+{
+    return 0;
+}
 
-float3 reconstruct_position(float hwDepth, float2 uv) {
+float3 ReconstructWorldPosition(float hwDepth, float2 uv) {
 	const float ray_x = 1./frame_.projection_matrix._11;
 	const float ray_y = 1./frame_.projection_matrix._22;
 	float3 screen_ray = float3(lerp( -ray_x, ray_x, uv.x ), -lerp( -ray_y, ray_y, uv.y ), -1.);
 	float depth = -linearize_depth(hwDepth, frame_.projection_matrix);
-	float3 V = mul(screen_ray, transpose((float3x3)frame_.view_matrix));
+	float3 viewDirection = mul(screen_ray, transpose((float3x3)frame_.view_matrix));
 
-	return depth * V;
+	return depth * viewDirection - frame_.eye_offset_in_world;
 }
 
-float2 get_voxel_lod_range(uint lod) 
+float2 get_voxel_lod_range(uint lod, int isMassive)
 {
-	lod = min(lod, 8 + 16 - 1);
-	return (lod % 2) ? frame_.voxel_lod_range[lod/2].zw : frame_.voxel_lod_range[lod/2].xy;
+	lod = min(lod + 8 * isMassive, 8 + 16 - 1);
+	return (lod % 2) ? frame_.voxel_lod_range[lod / 2].zw : frame_.voxel_lod_range[lod / 2].xy;
 }
 
 #endif

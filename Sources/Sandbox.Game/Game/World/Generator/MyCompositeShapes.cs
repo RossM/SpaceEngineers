@@ -4,6 +4,7 @@ using Sandbox.Engine.Utils;
 using Sandbox.Engine.Voxels;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -17,9 +18,11 @@ using VRageMath;
 namespace Sandbox.Game.World.Generator
 {
     internal delegate void MyCompositeShapeGeneratorDelegate(int seed, float size, out MyCompositeShapeGeneratedData data);
-
+    
     internal static class MyCompositeShapes
     {
+        public const float PLANET_SCALE_FACTOR = 1.2f;
+
         private static readonly List<MyVoxelMaterialDefinition> m_surfaceMaterials = new List<MyVoxelMaterialDefinition>();
         private static readonly List<MyVoxelMaterialDefinition> m_depositMaterials = new List<MyVoxelMaterialDefinition>();
         private static readonly List<MyVoxelMaterialDefinition> m_coreMaterials = new List<MyVoxelMaterialDefinition>();
@@ -39,7 +42,7 @@ namespace Sandbox.Game.World.Generator
         {
             Generator(0, seed, size, out data);
         }
-
+       
         //Added ice material
         private static void Generator1(int seed, float size, out MyCompositeShapeGeneratedData data)
         {
@@ -50,6 +53,7 @@ namespace Sandbox.Game.World.Generator
         {
             Generator(2, seed, size, out data);
         }
+
         private static MyVoxelMaterialDefinition GetMaterialByName(String name)
         {
             foreach (var material in MyDefinitionManager.Static.GetVoxelMaterialDefinitions())
@@ -297,7 +301,21 @@ namespace Sandbox.Game.World.Generator
                     };
                     shuffleMaterials(m_depositMaterials);
 
-                    data.DefaultMaterial = m_surfaceMaterials[(int)random.Next() % m_surfaceMaterials.Count];
+                    if (m_surfaceMaterials.Count == 0)
+                    {
+                        if (m_depositMaterials.Count == 0)
+                        {
+                            data.DefaultMaterial = m_coreMaterials[(int)random.Next() % m_coreMaterials.Count];
+                        }
+                        else
+                        {
+                            data.DefaultMaterial = m_depositMaterials[(int)random.Next() % m_depositMaterials.Count];
+                        }
+                    }
+                    else
+                    {
+                        data.DefaultMaterial = m_surfaceMaterials[(int)random.Next() % m_surfaceMaterials.Count];
+                    }
 
                     if (false)
                     {
@@ -333,11 +351,32 @@ namespace Sandbox.Game.World.Generator
                             MyVoxelMaterialDefinition material;
                             if (i == 0)
                             {
-                                material = m_coreMaterials[(int)random.Next() % m_coreMaterials.Count];
+                                if (m_coreMaterials.Count == 0)
+                                {
+                                    if (m_depositMaterials.Count == 0)
+                                    {
+                                        material = m_surfaceMaterials[(int)random.Next() % m_surfaceMaterials.Count];
+                                    }
+                                    else
+                                    {
+                                        material = m_depositMaterials[currentMaterial++];
+                                    }
+                                }
+                                else
+                                {
+                                    material = m_coreMaterials[(int)random.Next() % m_coreMaterials.Count];
+                                }
                             }
                             else
                             {
-                                material = m_depositMaterials[currentMaterial++];
+                                if (m_depositMaterials.Count == 0)
+                                {
+                                    material = m_surfaceMaterials[(int)random.Next() % m_surfaceMaterials.Count];
+                                }
+                                else
+                                {
+                                    material = m_depositMaterials[currentMaterial++];
+                                }
                             }
                             data.Deposits[i] = new MyCompositeShapeOreDeposit(data.FilledShapes[i].DeepCopy(), material);
                             data.Deposits[i].Shape.ShrinkTo(random.NextFloat() * 0.15f + 0.6f);
@@ -353,11 +392,35 @@ namespace Sandbox.Game.World.Generator
                             var radius = random.NextFloat() * depositSize + 8f;
                             random.NextFloat();random.NextFloat();//backwards compatibility
                             MyCsgShapeBase shape = new MyCsgSphere(center, radius);
-                            data.Deposits[i] = new MyCompositeShapeOreDeposit(shape, m_depositMaterials[currentMaterial++]);
-                            if (currentMaterial == m_depositMaterials.Count)
+
+                            MyVoxelMaterialDefinition material;
+                            if (m_depositMaterials.Count == 0)
                             {
-                                currentMaterial = 0;
-                                shuffleMaterials(m_depositMaterials);
+                                material = m_surfaceMaterials[currentMaterial++];
+                            }
+                            else
+                            {
+                                material = m_depositMaterials[currentMaterial++];
+                            }
+
+                            data.Deposits[i] = new MyCompositeShapeOreDeposit(shape, material);
+
+                            if (m_depositMaterials.Count == 0)
+                            {
+                                if (currentMaterial == m_surfaceMaterials.Count)
+                                {
+                                    currentMaterial = 0;
+                                    shuffleMaterials(m_surfaceMaterials);
+                                }
+                            }
+                            else
+                            {
+
+                                if (currentMaterial == m_depositMaterials.Count)
+                                {
+                                    currentMaterial = 0;
+                                    shuffleMaterials(m_depositMaterials);
+                                }
                             }
                         }
                     }
@@ -400,7 +463,7 @@ namespace Sandbox.Game.World.Generator
                     m_depositMaterials.Add(material);
             }
 
-            if (m_surfaceMaterials.Count == 0) // this can happen if all materials are disabled or set to not spawn in asteroids
+            if (m_surfaceMaterials.Count == 0 && m_depositMaterials.Count == 0) // this can happen if all materials are disabled or set to not spawn in asteroids
                 throw new Exception("There are no voxel materials allowed to spawn in asteroids!");
         }
 

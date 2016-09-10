@@ -4,6 +4,7 @@ using System.Xml.Serialization;
 using ProtoBuf;
 using VRage.Utils;
 using VRage.Serialization;
+using VRage.Game.Common;
 
 namespace VRage.ObjectBuilders
 {
@@ -66,7 +67,7 @@ namespace VRage.ObjectBuilders
 
         #region Clone
 
-        public MyObjectBuilder_Base Clone()
+        virtual public MyObjectBuilder_Base Clone()
         {
             return MyObjectBuilderSerializer.Clone(this);
         }

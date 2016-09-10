@@ -11,6 +11,7 @@ using VRage.Library.Utils;
 using VRage.Plugins;
 using VRage.Utils;
 using VRageMath;
+using VRage.Library;
 
 namespace VRage.Network
 {
@@ -24,6 +25,7 @@ namespace VRage.Network
         private Dictionary<NetworkId, IMyNetObject> m_networkIDToObject = new Dictionary<NetworkId, IMyNetObject>();
         private Dictionary<IMyNetObject, NetworkId> m_objectToNetworkID = new Dictionary<IMyNetObject, NetworkId>();
         private Dictionary<IMyEventProxy, IMyProxyTarget> m_proxyToTarget = new Dictionary<IMyEventProxy, IMyProxyTarget>();
+        private Dictionary<Type, Ref<int>> m_tmpReportedObjects = new Dictionary<Type, Ref<int>>();
 
         VRage.Library.Collections.BitStream m_sendStreamEvent = new Library.Collections.BitStream();
         protected VRage.Library.Collections.BitStream m_sendStream = new Library.Collections.BitStream();
@@ -46,6 +48,7 @@ namespace VRage.Network
             m_receiveStream.Dispose();
             m_networkIDToObject.Clear();
             m_objectToNetworkID.Clear();
+            m_proxyToTarget.Clear();
         }
 
         protected Type GetTypeByTypeId(TypeId typeId)
@@ -118,7 +121,8 @@ namespace VRage.Network
                 if (proxyTarget != null)
                 {
                     Debug.Assert(proxyTarget.Target != null, "IMyProxyTarget.Target is null!");
-                    if (proxyTarget.Target != null)
+                    Debug.Assert(!m_proxyToTarget.ContainsKey(proxyTarget.Target), "Proxy is already added to list!");
+                    if (proxyTarget.Target != null && !m_proxyToTarget.ContainsKey(proxyTarget.Target))
                     {
                         m_proxyToTarget.Add(proxyTarget.Target, proxyTarget);
                     }
@@ -126,6 +130,10 @@ namespace VRage.Network
             }
             else
             {
+                if (obj != null && foundObj != null)
+                {
+                    MyLog.Default.WriteLine("Replicated object already exists adding : " + obj.ToString() + " existing : " + foundObj.ToString() + " id : " + networkID.ToString());
+                }
                 Debug.Fail("Replicated object already exists!");
             }
         }
@@ -167,12 +175,12 @@ namespace VRage.Network
             var proxyTarget = obj as IMyProxyTarget;
             if (proxyTarget != null)
             {
-                bool removedProxy = false;
+                Debug.Assert(proxyTarget.Target != null, "IMyProxyTarget.Target is null during object remove!");
                 if (proxyTarget.Target != null)
                 {
-                    removedProxy = m_proxyToTarget.Remove(proxyTarget.Target);
+                    bool removedProxy = m_proxyToTarget.Remove(proxyTarget.Target);
+                    Debug.Assert(removedProxy, "Network object proxy was not removed because it was not in collection");
                 }
-                Debug.Assert(removedProxy, "Network object proxy was not removed because it was not in collection");
             }
 
             m_networkIdGenerator.Return(networkID.Value);
@@ -196,7 +204,7 @@ namespace VRage.Network
 
         public IMyProxyTarget GetProxyTarget(IMyEventProxy proxy)
         {
-            return m_proxyToTarget[proxy];
+            return m_proxyToTarget.GetValueOrDefault(proxy);
         }
 
         public abstract void Update();
@@ -215,13 +223,37 @@ namespace VRage.Network
         {
             foreach (var obj in m_networkIDToObject)
             {
-                NetProfiler.Begin(GetGroupName(obj.Value));
-
-                NetProfiler.Begin(obj.Value.GetType().Name);
-                NetProfiler.End(1, 0, "", "{0.}", "{0}x");
-
-                NetProfiler.End(1, 0, "", "{0.}", "{0}x");
+                Ref<int> num;
+                var type = obj.Value.GetType();
+                if (!m_tmpReportedObjects.TryGetValue(type, out num))
+                {
+                    num = new Ref<int>();
+                    m_tmpReportedObjects[type] = num;
+                }
+                num.Value++;
             }
+
+            ReportObjects("Replicable objects", typeof(IMyReplicable));
+            ReportObjects("State groups", typeof(IMyStateGroup));
+            ReportObjects("Unknown net objects", typeof(object));
+        }
+
+        void ReportObjects(string name, Type baseType)
+        {
+            int count = 0;
+            NetProfiler.Begin(name);
+            foreach (var pair in m_tmpReportedObjects)
+            {
+                Ref<int> num = pair.Value;
+                if (num.Value > 0 && baseType.IsAssignableFrom(pair.Key))
+                {
+                    count += num.Value;
+                    NetProfiler.Begin(pair.Key.Name);
+                    NetProfiler.End(num.Value, 0, "", "{0:.} x", "");
+                    num.Value = 0;
+                }
+            }
+            NetProfiler.End(count, 0, "", "{0:.} x", "");
         }
 
         protected virtual MyClientStateBase GetClientData(EndpointId endpointId)
@@ -233,5 +265,16 @@ namespace VRage.Network
         {
             m_typeTable.Serialize(stream);
         }
+
+        #region Debug methods
+
+        /// <summary>
+        /// Returns string with current multiplayer status. Use only for debugging.
+        /// </summary>
+        /// <returns>Already formatted string with current multiplayer status.</returns>
+        public virtual string GetMultiplayerStat() { return "Multiplayer Statistics:" + MyEnvironment.NewLine; }
+
+        #endregion
+
     }
 }

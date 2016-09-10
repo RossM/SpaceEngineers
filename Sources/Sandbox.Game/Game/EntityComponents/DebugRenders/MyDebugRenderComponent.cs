@@ -7,7 +7,6 @@ using VRageRender;
 using Sandbox.ModAPI;
 using Sandbox.Common;
 using Sandbox.Common.ObjectBuilders;
-using Sandbox.Common.ObjectBuilders.Voxels;
 using Sandbox.Definitions;
 using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
@@ -18,44 +17,46 @@ using System.Diagnostics;
 using System.Threading;
 
 using Sandbox.Game.Entities;
-using Sandbox.Common.Components;
+
 using VRage.Utils;
 using VRage.Import;
 using VRage.ModAPI;
-using VRage.Components;
+using VRage.Game.Components;
+using VRage.Game.Models;
+using VRage.Game.Entity;
 
 namespace Sandbox.Game.Components
 {
     public class MyDebugRenderComponent : MyDebugRenderComponentBase
     {
-        MyEntity m_entity = null;
+        protected MyEntity Entity = null;
         #region overrides
         public MyDebugRenderComponent(IMyEntity entity)
         {
-            m_entity = (MyEntity)entity;
+            Entity = (MyEntity)entity;
         }
         public override void DebugDrawInvalidTriangles()
         {
-            if (m_entity == null)
+            if (Entity == null)
             {
                 return;
             }
-            foreach (var child in this.m_entity.Hierarchy.Children)
+            foreach (var child in this.Entity.Hierarchy.Children)
             {
                 child.Container.Entity.DebugDrawInvalidTriangles();
             }
 
-            if (m_entity.Render.GetModel() != null)
+            if (Entity.Render.GetModel() != null)
             {
-                int triCount = m_entity.Render.GetModel().GetTrianglesCount();
+                int triCount = Entity.Render.GetModel().GetTrianglesCount();
                 for (int i = 0; i < triCount; ++i)
                 {
-                    var triangle = m_entity.Render.GetModel().GetTriangle(i);
-                    if (MyUtils.IsWrongTriangle(m_entity.Render.GetModel().GetVertex(triangle.I0), m_entity.Render.GetModel().GetVertex(triangle.I1), m_entity.Render.GetModel().GetVertex(triangle.I2)))
+                    var triangle = Entity.Render.GetModel().GetTriangle(i);
+                    if (MyUtils.IsWrongTriangle(Entity.Render.GetModel().GetVertex(triangle.I0), Entity.Render.GetModel().GetVertex(triangle.I1), Entity.Render.GetModel().GetVertex(triangle.I2)))
                     {
-                        Vector3 v0 = Vector3.Transform(m_entity.Render.GetModel().GetVertex(triangle.I0), m_entity.PositionComp.WorldMatrix);
-                        Vector3 v1 = Vector3.Transform(m_entity.Render.GetModel().GetVertex(triangle.I1), m_entity.PositionComp.WorldMatrix);
-                        Vector3 v2 = Vector3.Transform(m_entity.Render.GetModel().GetVertex(triangle.I2), m_entity.PositionComp.WorldMatrix);
+                        Vector3 v0 = Vector3.Transform(Entity.Render.GetModel().GetVertex(triangle.I0), Entity.PositionComp.WorldMatrix);
+                        Vector3 v1 = Vector3.Transform(Entity.Render.GetModel().GetVertex(triangle.I1), Entity.PositionComp.WorldMatrix);
+                        Vector3 v2 = Vector3.Transform(Entity.Render.GetModel().GetVertex(triangle.I2), Entity.PositionComp.WorldMatrix);
                         VRageRender.MyRenderProxy.DebugDrawLine3D(v0, v1, Color.Purple, Color.Purple, false);
                         VRageRender.MyRenderProxy.DebugDrawLine3D(v1, v2, Color.Purple, Color.Purple, false);
                         VRageRender.MyRenderProxy.DebugDrawLine3D(v2, v0, Color.Purple, Color.Purple, false);
@@ -67,22 +68,20 @@ namespace Sandbox.Game.Components
                 }
             }
         }
-        public override bool DebugDraw()
+        public override void DebugDraw()
         {
             if (MyDebugDrawSettings.DEBUG_DRAW_MODEL_DUMMIES)
             {
-                DebugDrawDummies(m_entity.Render.GetModel());
+                DebugDrawDummies(Entity.Render.GetModel());
             }
 
             if (MyDebugDrawSettings.DEBUG_DRAW_ENTITY_IDS)
             {
-                if (this.m_entity.Parent == null || !MyDebugDrawSettings.DEBUG_DRAW_ENTITY_IDS_ONLY_ROOT)
+                if (this.Entity.Parent == null || !MyDebugDrawSettings.DEBUG_DRAW_ENTITY_IDS_ONLY_ROOT)
                 {
-                    MyRenderProxy.DebugDrawText3D(m_entity.PositionComp.WorldMatrix.Translation, m_entity.EntityId.ToString("X16"), Color.White, 0.6f, false);
+                    MyRenderProxy.DebugDrawText3D(Entity.PositionComp.WorldMatrix.Translation, Entity.EntityId.ToString("X16"), Color.White, 0.6f, false);
                 }
             }
-
-            return true;
         }
         #endregion
 
@@ -93,16 +92,26 @@ namespace Sandbox.Game.Components
                 return;
             }
 
+            var distanceSquared = 0f;
+            var cameraPos = Vector3D.Zero;
+            if (MySector.MainCamera != null) 
+            {
+                distanceSquared = MyDebugDrawSettings.DEBUG_DRAW_MODEL_DUMMIES_DISTANCE * MyDebugDrawSettings.DEBUG_DRAW_MODEL_DUMMIES_DISTANCE;
+                cameraPos = MySector.MainCamera.WorldMatrix.Translation;
+            }
+
             foreach (var dummy in model.Dummies)
             {
                 MyModelDummy modelDummy = dummy.Value;
 
-                MatrixD worldMatrix = (MatrixD)modelDummy.Matrix * m_entity.PositionComp.WorldMatrix;
+                MatrixD worldMatrix = (MatrixD)modelDummy.Matrix * Entity.PositionComp.WorldMatrix;
+                if (distanceSquared != 0f && Vector3D.DistanceSquared(cameraPos, worldMatrix.Translation) > distanceSquared)
+                    continue;
+
                 VRageRender.MyRenderProxy.DebugDrawText3D(worldMatrix.Translation, dummy.Key, Color.White, 0.7f, false);
                 VRageRender.MyRenderProxy.DebugDrawAxis(MatrixD.Normalize(worldMatrix), 0.1f, false);
-                VRageRender.MyRenderProxy.DebugDrawOBB(worldMatrix, Vector3.One, 1, false, false);
+                VRageRender.MyRenderProxy.DebugDrawOBB(worldMatrix, Vector3.One, 0.1f, false, false);
             }
-
         }
     }
 }

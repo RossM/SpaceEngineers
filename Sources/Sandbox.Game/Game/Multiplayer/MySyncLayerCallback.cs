@@ -1,5 +1,7 @@
 ﻿using VRage.Serialization;
+#if !XB1 // XB1_NOPROTOBUF
 using ProtoBuf.Meta;
+#endif // !XB1
 using Sandbox.Engine.Multiplayer;
 using Sandbox.Game.World;
 using System;
@@ -12,6 +14,7 @@ using VRage.Trace;
 using Sandbox.Common.ObjectBuilders;
 using VRage.Compiler;
 using VRage.ObjectBuilders;
+using VRage.Game.Entity;
 
 namespace Sandbox.Game.Multiplayer
 {
@@ -24,7 +27,7 @@ namespace Sandbox.Game.Multiplayer
     {
         public static string GetEntityText(this IEntityMessage msg)
         {
-            Sandbox.Game.Entities.MyEntity entity;
+            MyEntity entity;
             if (Sandbox.Game.Entities.MyEntities.TryGetEntityById(msg.GetEntityId(), out entity))
             {
                 return entity.ToString();
@@ -48,7 +51,6 @@ namespace Sandbox.Game.Multiplayer
     {
         FromServer = 1,
         ToServer = 2,
-        ToSelf = 4,
     }
 
     public partial class MySyncLayer
@@ -59,10 +61,12 @@ namespace Sandbox.Game.Multiplayer
             void Unregister(MySyncLayer layer);
         }
 
+#if !XB1 // XB1_NOPROTOBUF
         class DefaultProtoSerializer<T>
         {
             public static readonly ProtoSerializer<T> Default = new ProtoSerializer<T>(MyObjectBuilderSerializer.Serializer);
         }
+#endif // !XB1
 
         class Registrator<TMsg> : IRegistrator
             where TMsg : struct
@@ -119,15 +123,17 @@ namespace Sandbox.Game.Multiplayer
             }
 
             void Handle(ref TMsg msg, ulong sender, TimeSpan timestamp)
-            {
-                if (Sync.ServerId == sender)
-                {
-                    Layer.LastMessageFromServer = DateTime.UtcNow;
-                }
-
+            {              
                 MyNetworkClient player;
                 bool playerFound = Layer.Clients.TryGetClient(sender, out player);
                 bool permissionsOk = MySyncLayer.CheckReceivePermissions(sender, Permission);
+
+             /*   if (!playerFound && msg is ConnectedClientDataMsg)
+                {
+                    var m = (ConnectedClientDataMsg)(object)msg;
+                    player = Layer.Clients.AddClient(sender);
+                    playerFound = true;
+                }*/
 
                 //TODO: This should be ok if client loads the scene, buffers another player messages
                 //and during that time is that player kicked

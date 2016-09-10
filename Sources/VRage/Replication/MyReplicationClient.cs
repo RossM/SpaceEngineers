@@ -8,26 +8,31 @@ using VRage.Library.Collections;
 using VRage.Library.Utils;
 using VRage.Replication;
 using VRage.Serialization;
+using VRage.Utils;
 using VRageMath;
 
 namespace VRage.Network
 {
     public class MyReplicationClient : MyReplicationLayer
-    {
+    {     
         bool m_clientReady;
         bool m_hasTypeTable;
         IReplicationClientCallback m_callback;
         CacheList<IMyStateGroup> m_tmpGroups = new CacheList<IMyStateGroup>(4);
         List<byte> m_acks = new List<byte>();
         byte m_lastStateSyncPacketId;
+       
 
         // TODO: Maybe pool pending replicables?
         Dictionary<NetworkId, MyPendingReplicable> m_pendingReplicables = new Dictionary<NetworkId, MyPendingReplicable>(16);
 
-        MyEventBuffer m_eventBuffer = new MyEventBuffer();
-        MyEventBuffer.Handler m_eventHandler;
+        MyEventsBuffer m_eventBuffer = new MyEventsBuffer();
+        MyEventsBuffer.Handler m_eventHandler;
+        MyEventsBuffer.IsBlockedHandler m_isBlockedHandler;
 
         public MyClientStateBase ClientState;
+
+        uint m_currentTimeStamp = 0;
 
         public MyReplicationClient(IReplicationClientCallback callback, MyClientStateBase clientState)
             : base(false)
@@ -35,6 +40,7 @@ namespace VRage.Network
             m_callback = callback;
             ClientState = clientState;
             m_eventHandler = base.ProcessEvent;
+            m_isBlockedHandler = this.IsBlocked;
         }
 
         public override void Dispose()
@@ -51,39 +57,135 @@ namespace VRage.Network
         /// <summary>
         /// Marks replicable as successfully created, ready to receive events and state groups data.
         /// </summary>
-        void SetReplicableReady(NetworkId networkId, IMyReplicable replicable)
+        void SetReplicableReady(NetworkId networkId, IMyReplicable replicable, bool loaded)
         {
             MyPendingReplicable pendingReplicable;
             if (m_pendingReplicables.TryGetValue(networkId, out pendingReplicable))
             {
-                var ids = pendingReplicable.StateGroupIds;
+                m_pendingReplicables.Remove(networkId);
 
-                AddNetworkObjectClient(networkId, replicable);
-
-                using (m_tmpGroups)
+                if (loaded)
                 {
-                    replicable.GetStateGroups(m_tmpGroups);
-                    Debug.Assert(ids.Count == m_tmpGroups.Count, "Number of state groups on client and server for replicable does not match");
-                    for (int i = 0; i < m_tmpGroups.Count; i++)
+                    var ids = pendingReplicable.StateGroupIds;
+
+                    AddNetworkObjectClient(networkId, replicable);
+
+                    using (m_tmpGroups)
                     {
-                        if (m_tmpGroups[i] != replicable)
-                            AddNetworkObjectClient(ids[i], m_tmpGroups[i]);
+                        
+                        IMyStreamableReplicable streamable = replicable as IMyStreamableReplicable;
+                        if (streamable != null && pendingReplicable.IsStreaming)
+                        {
+                            var group = streamable.GetStreamingStateGroup();
+                            m_tmpGroups.Add(group);
+                        }
+
+                        replicable.GetStateGroups(m_tmpGroups);
+                        Debug.Assert(ids.Count == m_tmpGroups.Count, "Number of state groups on client and server for replicable does not match");
+                        for (int i = 0; i < m_tmpGroups.Count; i++)
+                        {
+                            if (m_tmpGroups[i] != replicable && m_tmpGroups[i].GroupType != StateGroupEnum.Streamining)
+                            {
+                                AddNetworkObjectClient(ids[i], m_tmpGroups[i]);
+                            }
+                        }
+                    }
+                    m_eventBuffer.ProcessEvents(networkId, m_eventHandler, m_isBlockedHandler, NetworkId.Invalid);
+                }
+                else
+                {
+                    MyLog.Default.WriteLine("Failed to create replicable ! Type : " + replicable.ToString());
+                    m_eventBuffer.RemoveEvents(networkId);
+
+                    IMyStreamableReplicable streamable = replicable as IMyStreamableReplicable;
+                    if (streamable != null && pendingReplicable.IsStreaming)
+                    {
+                        var group = streamable.GetStreamingStateGroup();
+                        group.Destroy();
+                        NetworkId streaingGroupId;
+                        if (TryGetNetworkIdByObject(group, out streaingGroupId))
+                        {
+                            RemoveNetworkedObject(group);
+                        }
+                        MyLog.Default.WriteLine("removing streaming group for not loaded replicable !");
                     }
                 }
 
-                m_pendingReplicables.Remove(networkId);
-                m_eventBuffer.ProcessEvents(networkId, m_eventHandler);
-
                 m_sendStream.ResetWrite();
                 m_sendStream.WriteNetworkId(networkId);
+                m_sendStream.WriteBool(loaded);
                 m_callback.SendReplicableReady(m_sendStream);
             }
             else
             {
-                // Replicable was already destroyed on server, during it's load on client
-                m_eventBuffer.RemoveEvents(networkId);
+                m_pendingReplicables.Remove(networkId);
+                using (m_tmpGroups)
+                {
+                    IMyStreamableReplicable streamable = replicable as IMyStreamableReplicable;
+                    if (streamable != null && streamable.NeedsToBeStreamed)
+                    {
+                        var group = streamable.GetStreamingStateGroup();
+                        m_tmpGroups.Add(group);
+                        MyLog.Default.WriteLine("removing streaming group for not loaded replicable !" );
+                    }
+
+                    replicable.GetStateGroups(m_tmpGroups);
+                    foreach (var g in m_tmpGroups)
+                    {
+                        if (g != null) // when terminal repblicable fails to attach to block its state group is null becouase its created inside hook method.
+                        {
+                            g.Destroy();
+                        }
+                    }
+                }      
                 replicable.OnDestroy();
             }
+        }
+
+        public void ProcessReplicationCreateBegin(MyPacket packet)
+        {
+            m_receiveStream.ResetRead(packet);
+
+            TypeId typeId = m_receiveStream.ReadTypeId();
+            NetworkId networkID = m_receiveStream.ReadNetworkId();
+            byte groupCount = m_receiveStream.ReadByte();
+
+            var pendingReplicable = new MyPendingReplicable();
+            for (int i = 0; i < groupCount; i++)
+            {
+                var id = m_receiveStream.ReadNetworkId();
+                pendingReplicable.StateGroupIds.Add(id);
+            }
+
+            Type type = GetTypeByTypeId(typeId);
+            IMyReplicable replicable = (IMyReplicable)Activator.CreateInstance(type);
+            pendingReplicable.DebugObject = replicable;
+
+            m_pendingReplicables.Add(networkID, pendingReplicable);
+
+            var ids = pendingReplicable.StateGroupIds;
+
+            using (m_tmpGroups)
+            {
+                IMyStreamableReplicable streamable = replicable as IMyStreamableReplicable;
+                if (streamable != null)
+                {
+                    pendingReplicable.IsStreaming = true;
+                    var group = streamable.GetStreamingStateGroup();
+                    m_tmpGroups.Add(group);
+                }
+
+                for (int i = 0; i < m_tmpGroups.Count; i++)
+                {
+                    if (m_tmpGroups[i] != replicable)
+                    {
+                        AddNetworkObjectClient(ids[i], m_tmpGroups[i]);
+                        pendingReplicable.StreamingGroupId = ids[i];
+                    }
+                }
+            }
+
+            replicable.OnLoadBegin(m_receiveStream, (loaded) => SetReplicableReady(networkID, replicable, loaded));
         }
 
         public void ProcessReplicationCreate(MyPacket packet)
@@ -104,9 +206,11 @@ namespace VRage.Network
             Type type = GetTypeByTypeId(typeId);
             IMyReplicable replicable = (IMyReplicable)Activator.CreateInstance(type);
             pendingReplicable.DebugObject = replicable;
+            pendingReplicable.IsStreaming = false;
+
             m_pendingReplicables.Add(networkID, pendingReplicable);
 
-            replicable.OnLoad(m_receiveStream, () => SetReplicableReady(networkID, replicable));
+            replicable.OnLoad(m_receiveStream, (loaded) => SetReplicableReady(networkID, replicable, loaded));
         }
 
         public void ProcessReplicationDestroy(MyPacket packet)
@@ -114,21 +218,55 @@ namespace VRage.Network
             m_receiveStream.ResetRead(packet);
             NetworkId networkID = m_receiveStream.ReadNetworkId();
 
-            if (!m_pendingReplicables.Remove(networkID)) // When it wasn't in pending replicables, it's already active and in scene, destroy it
+            MyPendingReplicable pendingReplicable;
+
+            if (!m_pendingReplicables.TryGetValue(networkID, out pendingReplicable)) // When it wasn't in pending replicables, it's already active and in scene, destroy it
             {
                 IMyReplicable replicable = (IMyReplicable)GetObjectByNetworkId(networkID);
-                using (m_tmpGroups)
+                // Debug.Assert(replicable != null, "Client received ReplicationDestroy, but object no longer exists (removed locally?)");
+                if (replicable != null)
                 {
-                    replicable.GetStateGroups(m_tmpGroups);
-                    foreach (var g in m_tmpGroups)
+                    using (m_tmpGroups)
                     {
-                        if (g != replicable)
-                            RemoveNetworkedObject(g);
+
+                        var streamable = replicable as IMyStreamableReplicable;
+                        if (streamable != null && streamable.NeedsToBeStreamed)
+                        {
+                            m_tmpGroups.Add(streamable.GetStreamingStateGroup());
+                        }
+
+                        replicable.GetStateGroups(m_tmpGroups);
+
+                        foreach (var g in m_tmpGroups)
+                        {
+                            if (g == null)
+                            {
+                                continue;
+                            }
+
+                            if (g != replicable)
+                                RemoveNetworkedObject(g);
+                            g.Destroy();
+                        }
+                    }
+
+                    RemoveNetworkedObject(replicable);
+                    replicable.OnDestroy();
+                }
+            }
+            else
+            {
+                m_pendingReplicables.Remove(networkID);
+                if (pendingReplicable.IsStreaming)
+                {
+                    IMyStateGroup group = (IMyStateGroup)GetObjectByNetworkId(pendingReplicable.StreamingGroupId);
+                    if (group != null)
+                    {
+                        RemoveNetworkedObject(group);
+                        group.Destroy();
                     }
                 }
-
-                RemoveNetworkedObject(replicable);
-                replicable.OnDestroy();
+                m_eventBuffer.RemoveEvents(networkID);   
             }
         }
 
@@ -139,33 +277,21 @@ namespace VRage.Network
             m_hasTypeTable = true;
         }
 
-        [Conditional("DEBUG")]
-        void CheckPending()
-        {
-            foreach (var pend in m_pendingReplicables)
-            {
-                pend.Value.DebugCounter++;
-                Debug.Assert(pend.Value.DebugCounter != 300, "Replicable '" + pend.Value.DebugObject.GetType().Name + "' is pending for more than 300 frames, forgot to call loadingDoneHandler?");
-            }
-        }
-
         public override void Update()
         {
             if (!m_clientReady || !m_hasTypeTable || ClientState == null)
                 return;
 
-            CheckPending();
-
+            
             // Update state groups on client
             foreach (var obj in NetworkObjects)
             {
                 var stateGroup = obj as IMyStateGroup;
                 if (stateGroup != null)
                 {
-                    stateGroup.ClientUpdate();
+                    stateGroup.ClientUpdate(m_currentTimeStamp);
                 }
             }
-
             m_sendStream.ResetWrite();
 
             // Write last state sync packet id
@@ -180,10 +306,20 @@ namespace VRage.Network
             }
             m_acks.Clear();
 
+            ClientState.ClientTimeStamp = m_currentTimeStamp;
             // Write Client state
-            ClientState.Serialize(m_sendStream);
+            ClientState.Serialize(m_sendStream, ClientState.ClientTimeStamp);
             m_callback.SendClientUpdate(m_sendStream);
+
+            m_currentTimeStamp++;
             //Client.SendMessageToServer(m_sendStream, PacketReliabilityEnum.UNRELIABLE, PacketPriorityEnum.IMMEDIATE_PRIORITY, MyChannelEnum.StateDataSync);
+        }
+
+        internal override bool DispatchBlockingEvent(BitStream stream, CallSite site, EndpointId recipient, IMyNetObject eventInstance, IMyNetObject blockedNetObj, float unreliablePriority)
+        {
+            Debug.Fail("Client should not call blocking events");
+            // For client this code is old. Only server can dispatch blocking events.
+            return DispatchEvent(stream, site, recipient, eventInstance, unreliablePriority);
         }
 
         internal override bool DispatchEvent(BitStream stream, CallSite site, EndpointId target, IMyNetObject instance, float unreliablePriority)
@@ -198,25 +334,54 @@ namespace VRage.Network
             else if (site.HasClientFlag)
             {
                 // Invoke locally only when it has ClientFlag and no ServerFlag
-                return true;
+                // THIS IS NO LONGER USED and IT'S NOT VALID
+                //return true;
             }
             return false;
         }
 
-        protected override void ProcessEvent(BitStream stream, NetworkId networkId, uint eventId, EndpointId sender)
+        /// <summary>
+        /// Checks if network id is blocked by other network id.
+        /// </summary>
+        /// <param name="networkId">Target network id.</param>
+        /// <param name="blockedNetId">Blocking network id.</param>
+        /// <returns></returns>
+        private bool IsBlocked(NetworkId networkId, NetworkId blockedNetId)
         {
-            if (networkId.IsValid && m_pendingReplicables.ContainsKey(networkId))
+            bool anyReplPending = m_pendingReplicables.ContainsKey(networkId) || m_pendingReplicables.ContainsKey(blockedNetId);
+            bool anyDoesNotExist = GetObjectByNetworkId(networkId) == null || (blockedNetId.IsValid && GetObjectByNetworkId(blockedNetId) == null);
+            
+
+            if (networkId.IsValid && (anyReplPending || anyDoesNotExist))
             {
-                m_eventBuffer.EnqueueEvent(stream, networkId, eventId, sender);
+                return true;
+            }
+
+            return false;
+        }
+
+        protected override void ProcessEvent(BitStream stream, NetworkId networkId, NetworkId blockedNetId, uint eventId, EndpointId sender)
+        {
+            LastMessageFromServer = DateTime.UtcNow;
+            // Check if any of them is not blocked already.
+            bool anyContainsEvents = m_eventBuffer.ContainsEvents(networkId) || m_eventBuffer.ContainsEvents(blockedNetId);
+
+            if (this.IsBlocked(networkId, blockedNetId) || anyContainsEvents)
+            {
+                m_eventBuffer.EnqueueEvent(stream, networkId, blockedNetId, eventId, sender);
+                // Only enqueue barrier if blocking network id is set
+                if(blockedNetId.IsValid)
+                    m_eventBuffer.EnqueueBarrier(blockedNetId, networkId);
             }
             else
             {
-                base.ProcessEvent(stream, networkId, eventId, sender);
+                base.ProcessEvent(stream, networkId, blockedNetId, eventId, sender);
             }
         }
 
         internal override void ProcessEvent(BitStream stream, CallSite site, object obj, IMyNetObject sendAs, EndpointId source)
         {
+            LastMessageFromServer = DateTime.UtcNow;
             // Client blindly invokes everything received from server (without validation)
             Invoke(site, stream, obj, source, null, false);
         }
@@ -226,29 +391,130 @@ namespace VRage.Network
         /// </summary>
         public void ProcessStateSync(MyPacket packet)
         {
+            LastMessageFromServer = DateTime.UtcNow;
             // Simulated packet loss
-           // if (MyRandom.Instance.NextFloat() > 0.05f) return;
+            // if (MyRandom.Instance.NextFloat() > 0.3f) return;
 
             m_receiveStream.ResetRead(packet);
+            bool isStreaming = m_receiveStream.ReadBool();
             m_lastStateSyncPacketId = m_receiveStream.ReadByte();
-
-            while (m_receiveStream.BytePosition < m_receiveStream.ByteLength)
+            try
             {
-                NetworkId networkID = m_receiveStream.ReadNetworkId();
-                IMyNetObject obj = GetObjectByNetworkId(networkID);
-                
-                var pos = m_receiveStream.BytePosition;
-                NetProfiler.Begin(obj.GetType().Name);
-                Debug.Assert(obj != null && obj is IMyStateGroup, "IMyStateGroup not found by NetworkId");
-                ((IMyStateGroup)obj).Serialize(m_receiveStream, null, m_lastStateSyncPacketId, 0);
+                while (m_receiveStream.BytePosition < m_receiveStream.ByteLength)
+                {
 
-                NetProfiler.End(m_receiveStream.ByteLength - pos);
+                    NetworkId networkID = m_receiveStream.ReadNetworkId();
+                    IMyStateGroup obj = GetObjectByNetworkId(networkID) as IMyStateGroup;
+
+                    if (obj == null)
+                    {
+                        if (isStreaming == false)
+                        {
+                            Debug.Fail("IMyStateGroup not found by NetworkId");
+                            break;
+                        }
+                        else
+                        {
+                            return;
+                        }
+                    }
+
+                    if (isStreaming && obj.GroupType != StateGroupEnum.Streamining)
+                    {
+                        Debug.Fail("group type mismatch !");
+                        MyLog.Default.WriteLine("received streaming flag but group is not streaming !");
+                        return;
+                    }
+
+                    if (!isStreaming && obj.GroupType == StateGroupEnum.Streamining)
+                    {
+                        Debug.Fail("group type mismatch !");
+                        MyLog.Default.WriteLine("received non streaming flag but group wants to stream !");
+                        return;
+                    }
+
+                    var pos = m_receiveStream.BytePosition;
+                    NetProfiler.Begin(obj.GetType().Name);
+                    obj.Serialize(m_receiveStream, ClientState.EndpointId, 0, m_lastStateSyncPacketId, 0);
+                    NetProfiler.End(m_receiveStream.ByteLength - pos);
+
+
+                    if (!m_acks.Contains(m_lastStateSyncPacketId))
+                    {
+                        m_acks.Add(m_lastStateSyncPacketId);
+                    }
+                }
             }
-
-            if (!m_acks.Contains(m_lastStateSyncPacketId))
+            catch (BitStreamException)
             {
-                m_acks.Add(m_lastStateSyncPacketId);
+
             }
         }
+
+        public JoinResultMsg OnJoinResult(MyPacket packet)
+        {
+            m_receiveStream.ResetRead(packet);
+            JoinResultMsg msg = VRage.Serialization.MySerializer.CreateAndRead<JoinResultMsg>(m_receiveStream);
+            return msg;
+        }
+
+        public ServerDataMsg OnWorldData(MyPacket packet)
+        {
+            m_receiveStream.ResetRead(packet);
+            ServerDataMsg msg = VRage.Serialization.MySerializer.CreateAndRead<ServerDataMsg>(m_receiveStream);
+            return msg;
+        }
+
+        public ServerBattleDataMsg OnWorldBattleData(MyPacket packet)
+        {
+            m_receiveStream.ResetRead(packet);
+            ServerBattleDataMsg msg = VRage.Serialization.MySerializer.CreateAndRead<ServerBattleDataMsg>(m_receiveStream);
+            return msg;
+        }
+
+        public ChatMsg OnChatMessage(MyPacket packet)
+        {
+            m_receiveStream.ResetRead(packet);
+            ChatMsg msg = VRage.Serialization.MySerializer.CreateAndRead<ChatMsg>(m_receiveStream);
+            return msg;
+        }
+
+        public ConnectedClientDataMsg OnClientConnected(MyPacket packet)
+        {
+            m_receiveStream.ResetRead(packet);
+            ConnectedClientDataMsg msg = VRage.Serialization.MySerializer.CreateAndRead<ConnectedClientDataMsg>(m_receiveStream);
+            return msg;
+        }
+
+        public void SendClientConnected(ref ConnectedClientDataMsg msg)
+        {
+            m_sendStream.ResetWrite();
+            VRage.Serialization.MySerializer.Write<ConnectedClientDataMsg>(m_sendStream, ref msg);
+            m_callback.SendConnectRequest(m_sendStream);
+        }
+        #region Debug methods
+
+        public override string GetMultiplayerStat()
+        {
+            StringBuilder multiplayerStat = new StringBuilder();
+            
+            string baseStats = base.GetMultiplayerStat();
+
+            multiplayerStat.Append(baseStats);
+
+            multiplayerStat.AppendLine("Pending Replicables:");
+            foreach(var pendingRep in m_pendingReplicables)
+            {
+                string pendingRepInfo = "   NetworkId: " + pendingRep.Key.ToString() + ", IsStreaming: " + pendingRep.Value.IsStreaming;
+                multiplayerStat.AppendLine(pendingRepInfo);
+            }
+
+            multiplayerStat.Append(m_eventBuffer.GetEventsBufferStat());
+
+            return multiplayerStat.ToString();
+        }
+
+        #endregion
+
     }
 }

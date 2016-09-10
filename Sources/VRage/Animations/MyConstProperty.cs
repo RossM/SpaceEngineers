@@ -1,32 +1,117 @@
 ﻿#region Using
 
+using ProtoBuf;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Xml;
+using System.Xml.Serialization;
 using VRage.Utils;
 using VRageMath;
+using VRageRender;
 
 #endregion
 
 namespace VRage.Animations
 {
+    #region PropertyObjectBuilders
+
+    public enum PropertyAnimationType
+    {
+        Const,
+        Animated,
+        Animated2D
+    }
+
+    [ProtoContract, XmlType("Property")]
+    public class GenerationProperty
+    {
+        [ProtoMember, XmlAttribute("Name")]
+        public string Name = "";
+
+        [ProtoMember, XmlAttribute("AnimationType")]
+        public PropertyAnimationType AnimationType = PropertyAnimationType.Const;
+
+        [ProtoMember, XmlAttribute("Type")]
+        public string Type = "";
+
+        [ProtoMember]
+        public float ValueFloat = 0f;
+
+        [ProtoMember]
+        public bool ValueBool = false;
+
+        [ProtoMember]
+        public int ValueInt = 0;
+
+        [ProtoMember]
+        public string ValueString = "";
+
+        [ProtoMember]
+        public Vector3 ValueVector3;
+
+        [ProtoMember]
+        public Vector4 ValueVector4;
+
+        [ProtoMember]
+        public List<AnimationKey> Keys;
+    }
+
+    [ProtoContract]
+    public class Generation2DProperty
+    {
+        [ProtoMember]
+        public List<AnimationKey> Keys;
+    }
+
+    [ProtoContract, XmlType("Key")]
+    public class AnimationKey
+    {
+        [ProtoMember]
+        public float Time = 0;
+
+        [ProtoMember]
+        public float ValueFloat = 0f;
+
+        [ProtoMember]
+        public bool ValueBool = false;
+
+        [ProtoMember]
+        public int ValueInt = 0;
+
+        [ProtoMember]
+        public string ValueString = "";
+
+        [ProtoMember]
+        public Vector3 ValueVector3;
+
+        [ProtoMember]
+        public Vector4 ValueVector4;
+
+        [ProtoMember]
+        public Generation2DProperty Value2D;
+    }
+
+    #endregion
+
     #region Interfaces
 
     public interface IMyConstProperty
     {
-        string Name { get; }
+        string Name { get; set; }
+        string ValueType { get; }
+        string BaseValueType { get; }
+        bool Animated { get; }
+        bool Is2D { get; }
         void Serialize(XmlWriter writer);
         void Deserialize(XmlReader reader);
+        void DeserializeFromObjectBuilder(GenerationProperty property);
         void SerializeValue(XmlWriter writer, object value);
         void DeserializeValue(XmlReader reader, out object value);
         void SetValue(object val);
+        object GetValue();
         IMyConstProperty Duplicate();       
-        Type GetValueType();
-        /// <summary>
-        /// Warning, this does allocation, use only in editor!
-        /// </summary>
-        object EditorGetValue();
+        Type GetValueType();        
     }
 
     #endregion
@@ -52,13 +137,34 @@ namespace VRage.Animations
         public string Name
         {
             get { return m_name; }
+            set { m_name = value; }
+        }
+
+        public virtual string ValueType
+        {
+            get { return typeof(T).Name; }
+        }
+
+        public virtual string BaseValueType
+        {
+            get { return ValueType; }
+        }
+
+        public virtual bool Animated
+        {
+            get { return false; }
+        }
+
+        public virtual bool Is2D
+        {
+            get { return false; }
         }
 
         protected virtual void Init()
         {
         }
 
-        object IMyConstProperty.EditorGetValue()
+        object IMyConstProperty.GetValue()
         {
             return m_value;
         }             
@@ -91,6 +197,11 @@ namespace VRage.Animations
 
         Type IMyConstProperty.GetValueType()
         {
+            return GetValueTypeInternal();
+        }
+
+        protected virtual Type GetValueTypeInternal()
+        {
             return typeof(T);
         }
 
@@ -98,8 +209,7 @@ namespace VRage.Animations
 
         public virtual void Serialize(XmlWriter writer)
         {
-            writer.WriteStartElement(this.GetType().Name);
-            writer.WriteAttributeString("name", Name);
+            writer.WriteStartElement("Value" + ValueType);
 
             SerializeValue(writer, m_value);
 
@@ -116,6 +226,45 @@ namespace VRage.Animations
             m_value = (T)v;
 
             reader.ReadEndElement(); // Type
+        }
+
+        public virtual void DeserializeFromObjectBuilder(GenerationProperty property)
+        {
+            m_name = property.Name;
+
+            object v;
+            switch (property.Type)
+            {
+                case "Float":
+                    v = property.ValueFloat;
+                    break;
+
+                case "Vector3":
+                    v = property.ValueVector3;
+                    break;
+
+                case "Vector4":
+                    v = property.ValueVector4;
+                    break;
+
+                default:
+                case "Int":
+                    v = property.ValueInt;
+                    break;
+
+                case "Bool":
+                    v = property.ValueBool;
+                    break;
+
+                case "String":
+                    v = property.ValueString;
+                    break;
+
+                case "MyTransparentMaterial":
+                    v = MyTransparentMaterials.GetMaterial(property.ValueString);
+                    break;
+            }
+            m_value = (T)v;
         }
 
         public virtual void SerializeValue(XmlWriter writer, object value)
@@ -143,6 +292,11 @@ namespace VRage.Animations
         public MyConstPropertyFloat(string name)
             : base(name)
         { }
+
+        public override string ValueType
+        {
+            get { return "Float"; }
+        }
 
         public override void SerializeValue(XmlWriter writer, object value)
         {
@@ -181,9 +335,16 @@ namespace VRage.Animations
             : base(name)
         { }
 
+        public override string ValueType
+        {
+            get { return "Vector3"; }
+        }
+
         public override void SerializeValue(XmlWriter writer, object value)
         {
-            MyUtils.SerializeValue(writer, (Vector3)value);
+            writer.WriteElementString("X", ((Vector3)value).X.ToString());
+            writer.WriteElementString("Y", ((Vector3)value).Y.ToString());
+            writer.WriteElementString("Z", ((Vector3)value).Z.ToString());
         }
 
         public override void DeserializeValue(XmlReader reader, out object value)
@@ -216,11 +377,19 @@ namespace VRage.Animations
 
         public MyConstPropertyVector4(string name)
             : base(name)
-        {  }
+        { }
+
+        public override string ValueType
+        {
+            get { return "Vector4"; }
+        }
 
         public override void SerializeValue(XmlWriter writer, object value)
         {
-            MyUtils.SerializeValue(writer, (Vector4)value);
+            writer.WriteElementString("W", ((Vector4)value).W.ToString());
+            writer.WriteElementString("X", ((Vector4)value).X.ToString());
+            writer.WriteElementString("Y", ((Vector4)value).Y.ToString());
+            writer.WriteElementString("Z", ((Vector4)value).Z.ToString());
         }
 
         public override void DeserializeValue(XmlReader reader, out object value)
@@ -255,6 +424,11 @@ namespace VRage.Animations
             : base(name)
         { }
 
+        public override string ValueType
+        {
+            get { return "Int"; }
+        }
+
         public override void SerializeValue(XmlWriter writer, object value)
         {
             writer.WriteValue(((int)value).ToString(CultureInfo.InvariantCulture));
@@ -283,7 +457,10 @@ namespace VRage.Animations
         #endregion
     }
 
-    public class MyConstPropertyEnum : MyConstPropertyInt, IMyConstProperty
+    public class MyConstPropertyEnum : MyConstPropertyInt
+#if !UNSHARPER
+        , IMyConstProperty
+#endif
     {
         Type m_enumType;
         List<string> m_enumStrings;
@@ -300,6 +477,11 @@ namespace VRage.Animations
         {
             m_enumType = enumType;
             m_enumStrings = enumStrings;
+        }
+
+        public override string BaseValueType
+        {
+            get { return "Enum"; }
         }
 
         public override void SerializeValue(XmlWriter writer, object value)
@@ -332,11 +514,17 @@ namespace VRage.Animations
             return prop;
         }
 
+#if UNSHARPER
+        protected override Type GetValueTypeInternal()
+        {
+            return m_enumType;
+        }
+#else
         Type IMyConstProperty.GetValueType()
         {
             return m_enumType;
         }
-
+#endif
         public override void SetValue(object val)
         {            
             int ival = Convert.ToInt32(val); // because just simple cast (int) thrown exception on ParticleTypeEnum type
@@ -351,6 +539,11 @@ namespace VRage.Animations
         public MyConstPropertyGenerationIndex(string name)
             : base(name)
         {
+        }
+
+        public override string BaseValueType
+        {
+            get { return "GenerationIndex"; }
         }
 
         public override void SerializeValue(XmlWriter writer, object value)
@@ -380,9 +573,14 @@ namespace VRage.Animations
             : base(name)
         { }
 
+        public override string ValueType
+        {
+            get { return "Bool"; }
+        }
+
         public override void SerializeValue(XmlWriter writer, object value)
         {
-            writer.WriteValue((bool)value);
+            writer.WriteValue(value.ToString().ToLower());
         }
 
         public override void DeserializeValue(XmlReader reader, out object value)
@@ -402,7 +600,48 @@ namespace VRage.Animations
 
         static public implicit operator bool(MyConstPropertyBool f)
         {
-            return f.GetValue<bool>();
+            return f != null && f.GetValue<bool>();
+        }
+
+        #endregion
+    }
+
+    public class MyConstPropertyString : MyConstProperty<string>
+    {
+        public MyConstPropertyString() { }
+
+        public MyConstPropertyString(string name)
+            : base(name)
+        { }
+
+        public override string ValueType
+        {
+            get { return "String"; }
+        }
+
+        public override void SerializeValue(XmlWriter writer, object value)
+        {
+            writer.WriteValue((string)value);
+        }
+
+        public override void DeserializeValue(XmlReader reader, out object value)
+        {
+            base.DeserializeValue(reader, out value);
+            value = value.ToString();
+        }
+
+        public override IMyConstProperty Duplicate()
+        {
+            MyConstPropertyString prop = new MyConstPropertyString(Name);
+            Duplicate(prop);
+            return prop;
+        }
+
+        #region Implicit and explicit conversions
+
+        static public implicit operator string(MyConstPropertyString f)
+        {
+            return f.GetValue<string>();
         }
 
         #endregion

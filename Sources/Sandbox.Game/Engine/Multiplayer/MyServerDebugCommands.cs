@@ -1,4 +1,6 @@
-﻿using Sandbox.Game.Entities;
+﻿#if !XB1
+using Sandbox.Game.Entities;
+using Sandbox.Game.Replication;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -54,3 +56,4 @@ namespace Sandbox.Engine.Multiplayer
         }
     }
 }
+#endif // !XB1

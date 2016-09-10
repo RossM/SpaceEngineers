@@ -31,6 +31,22 @@ namespace VRageRender
         {
         }
 
+        public override string ValueType
+        {
+            get
+            {
+                return "String";
+            }
+        }
+
+        public override string BaseValueType
+        {
+            get
+            {
+                return "MyTransparentMaterial";
+            }
+        }
+
         public override void DeserializeValue(XmlReader reader, out object value)
         {
             MyAnimatedPropertyTransparentMaterial prop = new MyAnimatedPropertyTransparentMaterial(this.Name,
@@ -69,6 +85,22 @@ namespace VRageRender
         {
         }
 
+        public override string ValueType
+        {
+            get
+            {
+                return "String";
+            }
+        }
+
+        public override string BaseValueType
+        {
+            get
+            {
+                return "MyTransparentMaterial";
+            }
+        }
+
         protected override void Init()
         {
             Interpolator = MyTransparentMaterialInterpolator.Switch;
@@ -96,6 +128,57 @@ namespace VRageRender
         protected override bool EqualsValues(object value1, object value2)
         {
             return ((MyTransparentMaterial) value1).Name == ((MyTransparentMaterial) value2).Name;
+        }
+    }
+
+    public class MyConstPropertyTransparentMaterial : MyConstProperty<MyTransparentMaterial>
+    {
+        public MyConstPropertyTransparentMaterial()
+        {
+        }
+
+        public MyConstPropertyTransparentMaterial(string name)
+            : base(name)
+        {
+        }
+
+        protected override void Init()
+        {
+            base.Init();
+        }
+
+        public override string ValueType
+        {
+            get
+            {
+                return "String";
+            }
+        }
+
+        public override string BaseValueType
+        {
+            get
+            {
+                return "MyTransparentMaterial";
+            }
+        }
+
+        public override IMyConstProperty Duplicate()
+        {
+            MyConstPropertyTransparentMaterial prop = new MyConstPropertyTransparentMaterial(Name);
+            Duplicate(prop);
+            return prop;
+        }
+
+        public override void SerializeValue(XmlWriter writer, object value)
+        {
+            writer.WriteValue(((MyTransparentMaterial)value).Name);
+        }
+
+        public override void DeserializeValue(XmlReader reader, out object value)
+        {
+            base.DeserializeValue(reader, out value);
+            value = MyTransparentMaterials.GetMaterial((string)value);
         }
     }
 }

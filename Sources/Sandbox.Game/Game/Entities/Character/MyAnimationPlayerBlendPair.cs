@@ -13,6 +13,8 @@ using VRage.Animations;
 using VRage.Import;
 using VRageMath;
 using VRage.FileSystem;
+using VRage.Game.Definitions.Animation;
+using VRage.Game.Models;
 
 
 #endregion
@@ -73,11 +75,11 @@ namespace Sandbox.Game.Entities
             }
         }
 
-        public void Advance()
+        public bool Advance()
         {
             if (m_state != AnimationBlendState.Stopped)
             {
-                float stepTime = MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
+                float stepTime = VRage.Game.MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
 
                 m_currentBlendTime += stepTime * ActualPlayer.TimeScale;
                 ActualPlayer.Advance(stepTime);
@@ -86,6 +88,11 @@ namespace Sandbox.Game.Entities
                 {
                     Stop(m_totalBlendTime);
                 }
+                return true;
+            }
+            else
+            {
+                return false;
             }
 
             //UpdateAnimation();
@@ -156,13 +163,12 @@ namespace Sandbox.Game.Entities
 
             animationDefinition.Status = MyAnimationDefinition.AnimationStatus.OK;
 
-            MyModel animation = MyModels.GetModelOnlyAnimationData(model);
-
-            System.Diagnostics.Debug.Assert(animation.Animations.Clips.Count > 0);
-            if (animation.Animations.Clips.Count == 0)
+            MyModel animation = VRage.Game.Models.MyModels.GetModelOnlyAnimationData(model);
+            Debug.Assert(animation != null && animation.Animations != null && animation.Animations.Clips.Count > 0);
+            if (animation != null && animation.Animations == null || animation.Animations.Clips.Count == 0)
                 return;
 
-            System.Diagnostics.Debug.Assert(animationDefinition.ClipIndex < animation.Animations.Clips.Count);
+            Debug.Assert(animationDefinition.ClipIndex < animation.Animations.Clips.Count);
             if (animation.Animations.Clips.Count <= animationDefinition.ClipIndex)
                 return;
 
@@ -173,6 +179,8 @@ namespace Sandbox.Game.Entities
 
             // Create a clip player and assign it to this model                        
             ActualPlayer.Initialize(animation, m_name, animationDefinition.ClipIndex, m_skinnedEntity, 1, timeScale, frameOption, m_bones, m_boneLODs);
+            ActualPlayer.AnimationMwmPathDebug = model;
+            ActualPlayer.AnimationNameDebug = animationDefinition.Id.SubtypeName;
 
             m_state = AnimationBlendState.BlendIn;
             m_currentBlendTime = 0;

@@ -6,6 +6,8 @@ using System.Diagnostics;
 using Sandbox.Game.EntityComponents;
 using VRage.Utils;
 using VRageMath;
+using VRage.Game.Entity;
+using System;
 
 namespace Sandbox.Game.GameSystems
 {
@@ -17,6 +19,7 @@ namespace Sandbox.Game.GameSystems
         private bool m_wheelsChanged;
         private float m_maxRequiredPowerInput;
         private MyCubeGrid m_grid;
+        public HashSet<MyMotorSuspension> Wheels { get { return m_wheels; } }
         private HashSet<MyMotorSuspension> m_wheels;
 
         #endregion
@@ -50,7 +53,7 @@ namespace Sandbox.Game.GameSystems
                 if (m_brake != value)
                 {
                     m_brake = value;
-                    UpdateBrake();
+                     UpdateBrake();
                 }
             }
         }
@@ -79,7 +82,14 @@ namespace Sandbox.Game.GameSystems
 
         void grid_OnPhysicsChanged(MyEntity obj)
         {
-            InitControl();
+            if (m_grid.GridSystems != null && m_grid.GridSystems.ControlSystem != null)
+            {
+                MyShipController controller = m_grid.GridSystems.ControlSystem.GetShipController();
+                if (controller != null)
+                {
+                    InitControl(controller);
+                }
+            }
         }
 
         public void Register(MyMotorSuspension motor)
@@ -91,9 +101,13 @@ namespace Sandbox.Game.GameSystems
             motor.Brake = m_handbrake;
         }
 
+        public event Action<MyCubeGrid> OnMotorUnregister;
+
         public void Unregister(MyMotorSuspension motor)
         {
             Debug.Assert(m_wheels.Contains(motor), "Removing wheel which was not registered.");
+            if (motor != null && motor.RotorGrid != null && OnMotorUnregister != null)
+                OnMotorUnregister(motor.RotorGrid);
             m_wheels.Remove(motor);
             m_wheelsChanged = true;
             motor.EnabledChanged -= motor_EnabledChanged;
@@ -128,6 +142,24 @@ namespace Sandbox.Game.GameSystems
                     }
                 }
             }
+        }
+
+        public bool HasWorkingWheels(bool propulsion)
+        {
+            foreach (var motor in m_wheels)
+            {
+                if (motor.IsWorking)
+                {
+                    if (propulsion)
+                    {
+                        if (motor.RotorGrid != null && motor.RotorAngularVelocity.LengthSquared() > 2f)
+                            return true;
+                    }
+                    else
+                        return true;
+                }
+            }
+            return false;
         }
 
         private void RecomputeWheelParameters()
@@ -171,11 +203,10 @@ namespace Sandbox.Game.GameSystems
                 motor.UpdateIsWorking();
         }
 
-        internal void InitControl()
+        internal void InitControl(MyEntity controller)
         {
-            if (Sandbox.Game.World.MySession.ControlledEntity != null)
-                foreach (var motor in m_wheels)
-                    motor.InitControl();
+            foreach (var motor in m_wheels)
+                motor.InitControl(controller);
         }
 
     }

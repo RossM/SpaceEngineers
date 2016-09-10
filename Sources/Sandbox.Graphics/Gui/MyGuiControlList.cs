@@ -1,9 +1,9 @@
-﻿using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using VRage.Game;
 using VRage.Utils;
 using VRageMath;
 
@@ -113,7 +113,10 @@ namespace Sandbox.Graphics.GUI
             Controls.Clear();
             foreach (MyGuiControlBase control in controls)
             {
-                Controls.Add(control);
+                if (control != null)
+                {
+                    Controls.Add(control);
+                }
             }
             Controls.CollectionChanged += OnVisibleControlsChanged;
             Controls.CollectionMembersVisibleChanged += OnVisibleControlsChanged;
@@ -277,6 +280,15 @@ namespace Sandbox.Graphics.GUI
         {
             if (m_itemsRectangle.Contains(MyGuiManager.MouseCursorPosition - GetPositionAbsoluteTopLeft()))
                 base.ShowToolTip();
+        }
+
+        /// <summary>
+        /// Set scroll to desired page. Default 0 mean start of the list.
+        /// </summary>
+        /// <param name="page"></param>
+        public void SetScrollBarPage(float page = 0)
+        {
+            m_scrollBar.SetPage(page);
         }
 
     }

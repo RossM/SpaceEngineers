@@ -16,18 +16,24 @@ using VRageMath;
 using VRage;
 using Sandbox.Engine.Utils;
 using Sandbox.Game.Gui;
-using Sandbox.Common.Components;
+
 using VRage.Voxels;
-using VRage.Components;
+using VRage.Game.Components;
 using VRage.ObjectBuilders;
 using Sandbox.Game.Entities.Character;
-
+using VRage.Network;
+using VRage.Serialization;
+using Sandbox.Engine.Multiplayer;
+using VRage.Game.Entity;
+using Sandbox.Game.Entities.Inventory;
+using VRage.Game;
 
 #endregion
 
 namespace Sandbox.Game.Entities
 {
     [MySessionComponentDescriptor(MyUpdateOrder.AfterSimulation, 800)]
+    [StaticEventOwner]
     public class MyFloatingObjects : MySessionComponentBase
     {
         #region Comparer
@@ -90,37 +96,15 @@ namespace Sandbox.Game.Entities
         static List<MyFloatingObject> m_synchronizedFloatingObjects = new List<MyFloatingObject>();
         static List<MyFloatingObject> m_floatingObjectsToSyncCreate = new List<MyFloatingObject>();
         static MyFloatingObjectsSynchronizationComparer m_synchronizationComparer = new MyFloatingObjectsSynchronizationComparer();
-        static MySyncFloatingObjects SyncObject;
         static List<MyFloatingObject> m_highPriority = new List<MyFloatingObject>();
         static List<MyFloatingObject> m_normalPriority = new List<MyFloatingObject>();
         static List<MyFloatingObject> m_lowPriority = new List<MyFloatingObject>();
         static Stopwatch m_measurementTime;
         static int m_updateCounter = 0;
-        static int m_highMessagesSent = 0;
-        static int m_normalMessagesSent = 0;
-        static int m_lowMessagesSent = 0;
-        static int m_highIndex = 0;
-        static int m_normalIndex = 0;
-        static int m_lowIndex = 0;
-        static float m_kilobytesPerSecond = 0;
-        static int m_syncCounter = 0;
         static bool m_needReupdateNewObjects = false;
         static int m_checkObjectInsideVoxel = 0;
 
 		static List<Tuple<MyPhysicalInventoryItem, BoundingBoxD, Vector3D>> m_itemsToSpawnNextUpdate = new List<Tuple<MyPhysicalInventoryItem, BoundingBoxD, Vector3D>>();
-
-        static Dictionary<MyFloatingObject, StabilityInfo> m_stableObjectsClient = new Dictionary<MyFloatingObject, StabilityInfo>(m_entityComparer);
-        static Dictionary<MyFloatingObject, StabilityInfo> m_tmpObjects = new Dictionary<MyFloatingObject, StabilityInfo>(m_entityComparer);
-
-        static HashSet<long> m_requestedEntities = new HashSet<long>();
-        static List<long> m_tmpEntities = new List<long>();
-        static int m_requestDelay = 0;
-        static int m_noRequestedCounter = 0;
-        static bool m_stableDirty = false;
-
-        static HashSet<MyFloatingObject> m_stableObjectsServer = new HashSet<MyFloatingObject>(m_entityComparer);
-        static HashSet<MyFloatingObject> m_futureStableObjectsServer = new HashSet<MyFloatingObject>(m_entityComparer);
-        static HashSet<MyFloatingObject> m_removedStableObjectsServer = new HashSet<MyFloatingObject>(m_entityComparer);
 
         #endregion
 
@@ -131,7 +115,6 @@ namespace Sandbox.Game.Entities
             Debug.Assert(m_instance == null);
             m_instance = this;
 
-            SyncObject = new MySyncFloatingObjects(this);
             m_measurementTime = new Stopwatch();
             m_measurementTime.Start();
         }
@@ -140,12 +123,29 @@ namespace Sandbox.Game.Entities
         {
             //Debug.Assert(m_instance == this);
             m_instance = null;
-
             base.UnloadData();
         }
 
         public override void UpdateAfterSimulation()
         {
+            if(Sync.IsServer == false)
+            {
+                return;
+            }
+
+            CheckObjectInVoxel();
+
+            if (m_updateCounter++ > 100)
+            {
+                m_updateCounter = 0;
+                ReduceFloatingObjects();
+            }
+
+            if (m_itemsToSpawnNextUpdate.Count > 0)
+            {
+                SpawnInventoryItems();
+            }
+
             base.UpdateAfterSimulation();
 
             if (m_updateCounter++ > 100)
@@ -161,126 +161,6 @@ namespace Sandbox.Game.Entities
             {
                 UpdateObjectCounters();
             }
-
-            m_syncCounter++;
-
-            if (m_syncCounter % 20 == 0)
-            {
-                if (SynchronizeObjects(m_highPriority, ref m_highIndex))
-                    m_highMessagesSent++;
-            }
-
-            if (m_syncCounter % 30 == 0)
-            {
-                if (SynchronizeObjects(m_normalPriority, ref m_normalIndex))
-                    m_normalMessagesSent++;
-            }
-
-            if (m_syncCounter % 50 == 0)
-            {
-                if (SynchronizeObjects(m_lowPriority, ref m_lowIndex))
-                    m_lowMessagesSent++;
-
-                SynchronizeNewObjects();
-            }
-
-            CheckObjectInVoxel();
-
-            if (m_measurementTime.ElapsedMilliseconds > 1000)
-            {
-                int totalMessages = m_highMessagesSent + m_normalMessagesSent + m_lowMessagesSent;
-                //int size = totalMessages * MySyncFloatingObjects.PositionUpdateCompressedMsgSize;
-                int size = totalMessages * MySyncFloatingObjects.PositionUpdateMsgSize;
-                m_kilobytesPerSecond = (size / (m_measurementTime.ElapsedMilliseconds / 1000.0f)) / 1024;
-                m_measurementTime.Restart();
-
-                //MyTrace.Send(TraceWindow.MultiplayerFiltered, "");
-                //MyTrace.Send(TraceWindow.MultiplayerFiltered, "High messages /s: " + m_highMessagesSent.ToString());
-                //MyTrace.Send(TraceWindow.MultiplayerFiltered, "Normal messages /s: " + m_normalMessagesSent.ToString());
-                //MyTrace.Send(TraceWindow.MultiplayerFiltered, "Low messages /s: " + m_lowMessagesSent.ToString());
-                //MyTrace.Send(TraceWindow.MultiplayerFiltered, "Total messages /s: " + totalMessages.ToString());
-                //MyTrace.Send(TraceWindow.MultiplayerFiltered, "Floating objects [KB/s]: " + m_kilobytesPerSecond.ToString());
-
-                m_highMessagesSent = 0;
-                m_normalMessagesSent = 0;
-                m_lowMessagesSent = 0;
-            }
-
-            if (m_itemsToSpawnNextUpdate.Count > 0)
-            {
-                SpawnInventoryItems();
-            }
-
-            if (!Sync.IsServer && MyPerGameSettings.EnableFloatingObjectsActiveSync)
-            {
-                if (m_stableDirty)
-                {
-                    m_stableDirty = false;
-                    foreach (var pair in m_stableObjectsClient)
-                    {
-                        var floatingObj = pair.Key;
-                        floatingObj.Physics.LinearVelocity = Vector3D.Zero;
-                        floatingObj.Physics.AngularVelocity = Vector3D.Zero;
-                        floatingObj.WorldMatrix = pair.Value.PositionAndOr.GetMatrix();
-                    }
-                }
-
-                if (MySession.LocalCharacter != null && ((--m_requestDelay) <= 0 || m_requestedEntities.Count == 0))
-                {
-                    Vector3D characterPos = MySession.LocalCharacter.WorldMatrix.Translation;
-                    double checkDist = 35;
-                    double enterDistSq = 20 * 20;
-                    m_requestDelay = 30; // 2 per sec
-                    m_requestedEntities.Clear();
-
-                    var manipulatedEntity = MySession.LocalCharacter.ManipulatedEntity;
-                    if (manipulatedEntity != null && manipulatedEntity is MyFloatingObject)
-                        m_stableObjectsClient.Remove(manipulatedEntity as MyFloatingObject);
-
-                    BoundingSphereD sphere = new BoundingSphereD(characterPos, checkDist);
-                    var entities = MyEntities.GetTopMostEntitiesInSphere(ref sphere);
-                    foreach (var entity in entities)
-                    {
-                        var fo = entity as MyFloatingObject;
-                        if (fo == null)
-                            continue;
-                        if (fo.MarkedForClose || fo.Physics == null || !fo.Physics.Enabled)
-                            continue;
-                        if (fo == manipulatedEntity)
-                            continue;
-
-                        if (Vector3D.DistanceSquared(characterPos, fo.PositionComp.GetPosition()) <= enterDistSq)
-                        {
-                            m_tmpEntities.Add(fo.EntityId);
-                            m_requestedEntities.Add(fo.EntityId);
-                        }
-                        if (m_stableObjectsClient.ContainsKey(fo))
-                            m_tmpObjects.Add(fo, m_stableObjectsClient[fo]);
-                    }
-                    entities.Clear();
-
-                    SyncObject.SendMakeStableBatchReq(m_tmpEntities);
-                    m_tmpEntities.Clear();
-
-                    var swap = m_stableObjectsClient;
-                    m_stableObjectsClient = m_tmpObjects;
-                    m_tmpObjects = swap;
-                    m_tmpObjects.Clear();
-      
-                    if (m_requestedEntities.Count == 0)
-                    {
-                        m_noRequestedCounter++;
-                        if (m_noRequestedCounter % 400 == 0)
-                        {
-                            m_stableDirty = true;
-                        }
-                    }
-                    else
-                    {
-                        m_noRequestedCounter = 0;
-                    }
-                }
-            }
         }
 
         private void UpdateObjectCounters()
@@ -294,13 +174,8 @@ namespace Sandbox.Game.Entities
         void OptimizeFloatingObjects()
         {
             ReduceFloatingObjects();
-
             OptimizeCloseDistances();
-
             OptimizeQualityType();
-
-            if (MyPerGameSettings.EnableFloatingObjectsActiveSync && Sync.IsServer)
-                OptimizeStableObjects();    
         }
 
         private void OptimizeCloseDistances()
@@ -311,8 +186,6 @@ namespace Sandbox.Game.Entities
             m_highPriority.Clear();
             m_normalPriority.Clear();
             m_lowPriority.Clear();
-            m_futureStableObjectsServer.Clear();
-            m_removedStableObjectsServer.Clear();
             m_needReupdateNewObjects = false;
 
             float CLOSEST_DISTANCE = 4 * 4;
@@ -340,31 +213,8 @@ namespace Sandbox.Game.Entities
                         m_normalPriority.Add(syncObject);
                     else
                         m_lowPriority.Add(syncObject);
-
-                    m_removedStableObjectsServer.Add(syncObject);
-                }
-                else
-                {
-                    if (linearVelocitySq > lowerEpsilonSq || angularVelocitySq > lowerEpsilonSq)
-                    { // if it is below the sync value but still moving, then resend
-                        m_stableObjectsServer.Remove(syncObject);
-                    }
-                    //syncObject.SyncWaitCounter++;
-                    m_futureStableObjectsServer.Add(syncObject);
                 }
             }
-        }
-
-        void OptimizeStableObjects()
-        {
-            foreach (var removedObject in m_removedStableObjectsServer)
-            {
-                m_tmpEntities.Add(removedObject.EntityId);
-            }
-            SyncObject.SendMakeUnstable(m_tmpEntities);
-            m_tmpEntities.Clear();
-            m_stableObjectsServer.ExceptWith(m_removedStableObjectsServer);
-            m_stableObjectsServer.UnionWith(m_futureStableObjectsServer);
         }
 
         void CheckObjectInVoxel()
@@ -386,7 +236,7 @@ namespace Sandbox.Game.Entities
                     //Debug.Assert(m_tmpResultList.Count == 1, "Voxel map AABBs shouldn't overlap!");
                     foreach (var voxelMap in m_tmpResultList)
                     {
-                        if (voxelMap != null && !voxelMap.MarkedForClose)
+                        if (voxelMap != null && !voxelMap.MarkedForClose && !(voxelMap is MyVoxelPhysics))
                         {
                             if (voxelMap.AreAllAabbCornersInside(ref worldMatrix, localAabb))
                             {
@@ -469,9 +319,12 @@ namespace Sandbox.Game.Entities
 
             floatingBuilder.PositionAndOrientation = new MyPositionAndOrientation(worldMatrix);
             var thrownEntity = MyEntities.CreateFromObjectBuilderAndAdd(floatingBuilder);
-            thrownEntity.Physics.ForceActivate();
-            ApplyPhysics(thrownEntity, motionInheritedFrom);
-            Debug.Assert(thrownEntity.Save == true, "Thrown item will not be saved. Feel free to ignore this.");
+            if (thrownEntity != null)
+            {
+                thrownEntity.Physics.ForceActivate();
+                ApplyPhysics(thrownEntity, motionInheritedFrom);
+                Debug.Assert(thrownEntity.Save == true, "Thrown item will not be saved. Feel free to ignore this.");
+            }
             return thrownEntity;
         }
 
@@ -517,12 +370,12 @@ namespace Sandbox.Game.Entities
             return thrownEntity;
         }
 
-        public static MyEntity Spawn(MyPhysicalItemDefinition itemDefinition, Vector3D translation, Vector3D forward, Vector3D up, int amount = 1)
+        public static MyEntity Spawn(MyPhysicalItemDefinition itemDefinition, Vector3D translation, Vector3D forward, Vector3D up, int amount = 1, float scale = 1)
         {
             var objectBuilder = MyObjectBuilderSerializer.CreateNewObject(itemDefinition.Id.TypeId, itemDefinition.Id.SubtypeName) as MyObjectBuilder_PhysicalObject;
 
             var floatingObj = MyFloatingObjects.Spawn(
-                new MyPhysicalInventoryItem((MyFixedPoint)amount, objectBuilder),
+                new MyPhysicalInventoryItem((MyFixedPoint)amount, objectBuilder, scale),
                 translation,
                 forward,
                 up);
@@ -538,9 +391,14 @@ namespace Sandbox.Game.Entities
         private static MyObjectBuilder_FloatingObject PrepareBuilder(ref MyPhysicalInventoryItem item)
         {
             Debug.Assert(item.Amount > 0, "FloatObject item amount must be > 0");
+            Debug.Assert(item.Scale > 0, "FloatObject item scale must be > 0");
 
             var floatingBuilder = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_FloatingObject>();
             floatingBuilder.Item = item.GetObjectBuilder();
+
+            var itemDefinition = MyDefinitionManager.Static.GetPhysicalItemDefinition(item.Content);
+            floatingBuilder.ModelVariant = itemDefinition.HasModelVariants ? MyUtils.GetRandomInt(itemDefinition.Models.Length) : 0;
+
             floatingBuilder.PersistentFlags |= MyPersistentEntityFlags2.Enabled | MyPersistentEntityFlags2.InScene;
             return floatingBuilder;
         }
@@ -647,11 +505,8 @@ namespace Sandbox.Game.Entities
             var item = obj.Item;
             item.Amount += amount;
             obj.Item = item;
-
+            obj.Amount.Value = item.Amount;
             obj.UpdateInternalState();
-
-            if (Sync.IsServer)
-                SyncObject.SendAddFloatingObject(obj, amount);
         }
 
         public static void RemoveFloatingObject(MyFloatingObject obj, bool sync)
@@ -659,9 +514,13 @@ namespace Sandbox.Game.Entities
             if (sync)
             {
                 if (Sync.IsServer)
+                {
                     RemoveFloatingObject(obj);
+                }
                 else
-                    SyncObject.SendRemoveFloatingObjectRequest(obj, MyFixedPoint.MaxValue);
+                {
+                    obj.SendCloseRequest();
+                }
             }
             else
             {
@@ -687,18 +546,13 @@ namespace Sandbox.Game.Entities
             {
                 obj.Item.Amount -= amount;
                 obj.RefreshDisplayName();
+                //In this case do not use obj.WasRemovedFromWorld = true; cause it causes the object not being picked up after removed by the collector
             }
             else
+            {
                 obj.Close();
-
-            obj.WasRemovedFromWorld = true;
-
-            if (Sync.IsServer)
-                SyncObject.SendRemoveFloatingObjectSuccess(obj, amount);
-
-            m_requestedEntities.Remove(obj.EntityId);
-            m_stableObjectsClient.Remove(obj);
-            m_stableObjectsServer.Remove(obj);
+                obj.WasRemovedFromWorld = true;
+            }
         }
 
 
@@ -716,6 +570,9 @@ namespace Sandbox.Game.Entities
                 if (set.Count > 0)
                 {
                     var floatingObject = set.Last();
+                    if (MyManipulationTool.IsEntityManipulated(floatingObject))
+                        break;
+
                     set.Remove(floatingObject);
                     if (Sync.IsServer)
                         RemoveFloatingObject(floatingObject);
@@ -781,106 +638,7 @@ namespace Sandbox.Game.Entities
                 }
             }
         }
-
-        public static bool SynchronizeObjects(List<MyFloatingObject> objects, ref int index)
-        {
-            if (objects.Count == 0)
-                return false;
-
-            if (index >= objects.Count)
-                index = 0;
-
-            var floatingObject = objects[index];
-            MySyncFloatingObjects.UpdatePosition(floatingObject);
-
-            if (floatingObject.ClosestDistanceToAnyPlayerSquared == -1)
-                floatingObject.ClosestDistanceToAnyPlayerSquared = 0;
-
-            floatingObject.SyncWaitCounter = 0;
-
-            index++;
-
-            return true;
-        }
-
-
-        void SynchronizeNewObjects()
-        {
-            SynchronizeNewObjects(m_floatingObjectsToSyncCreate);
-            m_floatingObjectsToSyncCreate.Clear();
-        }
-
-        public static void SynchronizeNewObjects(List<MyFloatingObject> objects)
-        {
-            if (SyncObject != null)
-            {
-                SyncObject.OnCreateFloatingObjects(objects);
-            }
-        }
-
-        #endregion
-
-        #region Stability
-
-        public void MakeStable(List<MySyncFloatingObjects.MakeStableEntityData> data)
-        {
-            var requestedCount = m_requestedEntities.Count;
-            MyFloatingObject floatingObj;
-            foreach (var ins in data)
-            {
-                if (!MyEntities.TryGetEntityById(ins.EntityId, out floatingObj))
-                    continue;
-                m_stableObjectsClient[floatingObj] = new StabilityInfo(ins.GetPositionAndOrientation());
-                m_requestedEntities.Remove(ins.EntityId);
-            }           
-            var afterRemoveCount = m_requestedEntities.Count;
-            if (afterRemoveCount == 0 && requestedCount != afterRemoveCount)
-            {
-                m_stableDirty = true;
-            }
-        }
-
-        public void MakeStableFailed(List<long> entities)
-        {
-            foreach (var id in entities)
-                m_requestedEntities.Remove(id);
-        }
-
-        public void MakeUnstable(List<long> entities)
-        {
-            MyFloatingObject floatingObj;
-            foreach (var entityId in entities)
-            {
-                if (!MyEntities.TryGetEntityById(entityId, out floatingObj))
-                    continue;
-                m_requestedEntities.Remove(entityId);
-                m_stableObjectsClient.Remove(floatingObj);
-            }
-        }
-
-        public void ProcessStableBatchReq(List<long> entityIds, MyCharacter playerCharacter, List<MySyncFloatingObjects.MakeStableEntityData> outStable, List<long> outNonStable)
-        {
-            var sqDist = 50 * 50;
-            MyFloatingObject fo;
-            var characterPos = playerCharacter.PositionComp.GetPosition();
-            foreach (var id in entityIds)
-            {
-                if (!MyEntities.TryGetEntityById(id, out fo) || !m_stableObjectsServer.Contains(fo) || Vector3D.DistanceSquared(fo.WorldMatrix.Translation, characterPos) > sqDist)
-                {
-                    outNonStable.Add(id);
-                }
-                else
-                {
-                    var newData = new MySyncFloatingObjects.MakeStableEntityData();
-                    newData.EntityId = fo.EntityId;
-                    newData.Position = fo.WorldMatrix.Translation;
-                    newData.Forward = fo.WorldMatrix.Forward;
-                    newData.Up = fo.WorldMatrix.Up;
-                    outStable.Add(newData);
-                }
-            }
-        }
-
+        
         #endregion
 
         /// <summary>
@@ -902,11 +660,28 @@ namespace Sandbox.Game.Entities
 
             return floatingBuilder;
         }
-
-        // sends message to server to 
-        internal static void RequestSync(MyFloatingObject myFloatingObject)
+        /// <summary>
+        /// Players are allowed to spawn any object in creative
+        /// </summary>
+        public static void RequestSpawnCreative(MyObjectBuilder_FloatingObject obj)
         {
-            MySyncFloatingObjects.RequestPositionFromServer(myFloatingObject);
+            if (MySession.Static.HasAdminRights||MySession.Static.CreativeMode)
+            {
+                MyMultiplayer.RaiseStaticEvent(x => RequestSpawnCreative_Implementation, obj);
+            }
+        }
+
+        [Event, Reliable, Server]
+        private static void RequestSpawnCreative_Implementation(MyObjectBuilder_FloatingObject obj)
+        {
+            if (MySession.Static.CreativeMode ||MyEventContext.Current.IsLocallyInvoked|| MySession.Static.HasPlayerAdminRights(MyEventContext.Current.Sender.Value))
+            {
+                MyEntities.CreateFromObjectBuilderAndAdd(obj);
+            }
+            else
+            {
+                MyEventContext.ValidationFailed();
+            }
         }
     }
 }

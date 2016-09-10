@@ -13,10 +13,13 @@ using VRage.Trace;
 using VRageMath;
 using Sandbox.Engine.Utils;
 using System.IO.Compression;
+using System.Linq;
 using Sandbox.Common;
 using VRage.Library.Utils;
 using MyFileSystem = VRage.FileSystem.MyFileSystem;
 using VRage.ObjectBuilders;
+using VRage;
+using VRage.Game;
 
 namespace Sandbox.Engine.Networking
 {
@@ -30,6 +33,7 @@ namespace Sandbox.Engine.Networking
         public static string LastSessionPath { get { return Path.Combine(MyFileSystem.SavesPath, LAST_SESSION_FILE); } }
         public static string ContentSessionsPath { get { return "Worlds"; } }
         public static string MissionSessionsPath { get { return "Missions"; } }
+        public static string AISchoolSessionsPath { get { return "AISchool"; } }
 
         private static string GetSectorPath(string sessionPath, Vector3I sectorPosition)
         {
@@ -129,6 +133,7 @@ namespace Sandbox.Engine.Networking
                 result.SessionName = Path.GetFileNameWithoutExtension(checkpointFile);
             }
 
+
             return result;
         }
 
@@ -152,6 +157,22 @@ namespace Sandbox.Engine.Networking
             return result;
         }
 
+        public static MyObjectBuilder_CubeGrid LoadCubeGrid(string sessionPath, string fileName, out ulong sizeInBytes)
+        {
+            MyObjectBuilder_CubeGrid result;
+
+            var cubeGridFile = Path.Combine(sessionPath, fileName);
+            MyObjectBuilderSerializer.DeserializeXML<MyObjectBuilder_CubeGrid>(cubeGridFile, out result, out sizeInBytes);
+
+            if (result == null)
+            {
+                MySandboxGame.Log.WriteLine("Incorrect save data");
+                return null;
+            }
+            return result;
+
+        }
+
         public static bool SaveSector(MyObjectBuilder_Sector sector, string sessionPath, Vector3I sectorPosition, out ulong sizeInBytes)
         {
             var relativePath = GetSectorPath(sessionPath, sectorPosition);
@@ -168,6 +189,12 @@ namespace Sandbox.Engine.Networking
         {
             var checkpointFile = Path.Combine(sessionPath, CHECKPOINT_FILE);
             return MyObjectBuilderSerializer.SerializeXML(checkpointFile, MySandboxGame.Config.CompressSaveGames, checkpoint, out sizeInBytes);
+        }
+
+        public static bool SaveRespawnShip(MyObjectBuilder_CubeGrid cubegrid, string sessionPath, string fileName, out ulong sizeInBytes)
+        {
+            var cubeGridFile = Path.Combine(sessionPath, fileName);
+            return MyObjectBuilderSerializer.SerializeXML(cubeGridFile, MySandboxGame.Config.CompressSaveGames, cubegrid, out sizeInBytes);
         }
 
         public static List<Tuple<string, MyWorldInfo>> GetAvailableWorldInfos()
@@ -192,13 +219,24 @@ namespace Sandbox.Engine.Networking
 
         public static List<Tuple<string, MyWorldInfo>> GetAvailableMissionInfos()
         {
-            MySandboxGame.Log.WriteLine("Loading available mission - START");
+            return GetAvailableInfosFromDirectory("mission", MissionSessionsPath);
+        }
+
+        public static List<Tuple<string, MyWorldInfo>> GetAvailableAISchoolInfos()
+        {
+            return GetAvailableInfosFromDirectory("AI school scenarios", AISchoolSessionsPath);
+        }
+
+        private static List<Tuple<string, MyWorldInfo>> GetAvailableInfosFromDirectory(string worldCategory, string worldDirectoryPath)
+        {
+            string loadingMessage = "Loading available " + worldCategory;
+            MySandboxGame.Log.WriteLine(loadingMessage + " - START");
             var result = new List<Tuple<string, MyWorldInfo>>();
             using (MySandboxGame.Log.IndentUsing(LoggingOptions.ALL))
             {
-                GetWorldInfoFromDirectory(Path.Combine(MyFileSystem.ContentPath, MissionSessionsPath), result);
+                GetWorldInfoFromDirectory(Path.Combine(MyFileSystem.ContentPath, worldDirectoryPath), result);
             }
-            MySandboxGame.Log.WriteLine("Loading available missions - END");
+            MySandboxGame.Log.WriteLine(loadingMessage + " - END");
             return result;
         }
 
@@ -208,14 +246,16 @@ namespace Sandbox.Engine.Networking
             var result = new List<Tuple<string, MyWorldInfo>>();
             using (MySandboxGame.Log.IndentUsing(LoggingOptions.ALL))
             {
-                var tutorialsPath = Path.Combine(MissionSessionsPath, "Tutorials");
+                var tutorialsPath = "Tutorials";
                 var basicTutorialsPath = Path.Combine(tutorialsPath, "Basic");
                 var intTutorialsPath = Path.Combine(tutorialsPath, "Intermediate");
                 var advTutorialsPath = Path.Combine(tutorialsPath, "Advanced");
+                var plaTutorialsPath = Path.Combine(tutorialsPath, "Planetary");
 
                 GetWorldInfoFromDirectory(Path.Combine(MyFileSystem.ContentPath, basicTutorialsPath), result);
                 GetWorldInfoFromDirectory(Path.Combine(MyFileSystem.ContentPath, intTutorialsPath), result);
                 GetWorldInfoFromDirectory(Path.Combine(MyFileSystem.ContentPath, advTutorialsPath), result);
+                GetWorldInfoFromDirectory(Path.Combine(MyFileSystem.ContentPath, plaTutorialsPath), result);
             }
             MySandboxGame.Log.WriteLine("Loading available tutorials - END");
             return result;

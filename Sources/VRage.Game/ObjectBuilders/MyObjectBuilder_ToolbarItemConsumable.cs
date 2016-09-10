@@ -1,22 +1,12 @@
 ﻿using ProtoBuf;
-using Sandbox.Common.ObjectBuilders;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using VRage.Game.ObjectBuilders;
 using VRage.ObjectBuilders;
 
-namespace Sandbox.Common.ObjectBuilders
+namespace VRage.Game
 {
     [ProtoContract]
     [MyObjectBuilderDefinition]
-    public class MyObjectBuilder_ToolbarItemConsumable : MyObjectBuilder_ToolbarItemDefinition
+    public class MyObjectBuilder_ToolbarItemConsumable : MyObjectBuilder_ToolbarItemUsable
     {
-        public SerializableDefinitionId defId
-        {
-            get { return base.DefinitionId; }
-            set { base.DefinitionId = value; }
-        }
-        public bool ShouldSerializedefId() { return false; }
     }
 }

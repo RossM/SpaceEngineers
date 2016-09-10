@@ -1,12 +1,13 @@
-﻿using Sandbox.Common.ObjectBuilders.ComponentSystem;
+﻿using VRage.Game.ObjectBuilders.ComponentSystem;
 using Sandbox.Definitions;
 using Sandbox.Game.Entities;
 using Sandbox.Game.Entities.Character;
 using Sandbox.Game.Multiplayer;
 using VRage;
-using VRage.Components;
+using VRage.Game.Components;
 using VRage.Game.ObjectBuilders;
 using VRage.Utils;
+using VRage.Game.ModAPI;
 
 namespace Sandbox.Game.Components
 {
@@ -24,8 +25,9 @@ namespace Sandbox.Game.Components
                 return null;
             }
         }
+        public MyDamageInformation LastDamage { get; private set; }
 
-		public float HealthRatio { get { var retVal = 1.0f; var health = Health; if (Health != null) retVal = health.Value/health.MaxValue; return retVal; } }
+        public float HealthRatio { get { var retVal = 1.0f; var health = Health; if (health != null) retVal = health.Value / health.MaxValue; return retVal; } }
 
 		public static readonly float LOW_HEALTH_RATIO = 0.2f;
 
@@ -92,6 +94,8 @@ namespace Sandbox.Game.Components
 			if(m_character != null)
 				m_character.CharacterAccumulatedDamage += damage;
 
+            if (statChangeData is MyDamageInformation)
+                LastDamage = (MyDamageInformation)statChangeData;
 			health.Decrease(damage, statChangeData);
 
 			if (updateSync && !Sync.IsServer)

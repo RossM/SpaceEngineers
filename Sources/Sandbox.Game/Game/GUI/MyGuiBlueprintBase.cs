@@ -33,70 +33,14 @@ using VRage.Library.Utils;
 using VRage.FileSystem;
 using VRage.ObjectBuilders;
 using Sandbox.Game.Localization;
+using VRage.Game;
+
 #endregion
 
 namespace Sandbox.Game.Gui
 {
-    class MyGuiControlImageButton : MyGuiControlBase
-    {
-        private MyGuiCompositeTexture m_borderTexture;
-
-        public MyGuiCompositeTexture BorderTexture
-        {
-            get { return m_borderTexture; }
-            set { m_borderTexture = value; }
-        }
-
-        public MyGuiControlImageButton(bool visible = true)
-        {
-            BackgroundTexture = new MyGuiCompositeTexture();
-            Visible = visible;
-            HighlightType = MyGuiControlHighlightType.NEVER;
-        }
-
-        public void SetTexture(string texture)
-        {
-            if (m_borderTexture != null)
-            {
-                BackgroundTexture = new MyGuiCompositeTexture()
-                {
-                    CenterBottom = m_borderTexture.CenterBottom,
-                    CenterTop = m_borderTexture.CenterTop,
-                    LeftBottom = m_borderTexture.LeftBottom,
-                    LeftTop = m_borderTexture.LeftTop,
-                    LeftCenter = m_borderTexture.LeftCenter,
-
-                    RightBottom = m_borderTexture.RightBottom,
-                    RightCenter = m_borderTexture.RightCenter,
-                    RightTop = m_borderTexture.RightTop,
-                    Center = new MyGuiSizedTexture() { Texture = texture, },
-                };
-            }
-            else 
-            {
-                BackgroundTexture = new MyGuiCompositeTexture()
-                {
-                    Center = new MyGuiSizedTexture() { Texture = texture, },
-                };
-            }
-        }
-    }
-
     public abstract class MyGuiBlueprintScreenBase : MyGuiScreenDebugBase
     {
-        [ProtoContract]
-        [MessageIdAttribute(13789, P2PMessageEnum.Reliable)]
-        protected struct ShareBlueprintMsg
-        {
-            [ProtoMember]
-            public ulong WorkshopId;
-            [ProtoMember]
-            public string Name;
-            [ProtoMember]
-            public ulong SendToId;
-
-        }
-
         public static string m_localBlueprintFolder = Path.Combine(MyFileSystem.UserDataPath, "Blueprints", "local");
         public static string m_workshopBlueprintFolder = Path.Combine(MyFileSystem.UserDataPath, "Blueprints", "workshop");
         public static string m_defaultBlueprintFolder = Path.Combine(MyFileSystem.ContentPath, "Data", "Blueprints");
@@ -119,7 +63,7 @@ namespace Sandbox.Game.Gui
         protected MyGuiControlButton CreateButton(float usableWidth, StringBuilder text, Action<MyGuiControlButton> onClick, bool enabled = true, MyStringId? tooltip = null, float textScale = 1f)
         {
             var button = AddButton(text, onClick);
-            button.VisualStyle = Common.ObjectBuilders.Gui.MyGuiControlButtonStyleEnum.Rectangular;
+            button.VisualStyle = MyGuiControlButtonStyleEnum.Rectangular;
             button.TextScale = textScale;
             button.Size = new Vector2(usableWidth, button.Size.Y);
             button.Position = button.Position + new Vector2(-0.04f / 2.0f, 0.0f);
@@ -150,12 +94,14 @@ namespace Sandbox.Game.Gui
             return new MyGuiControlLabel(text: text, originAlign: MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_TOP, position: position, textScale: textScale);
         }
 
-        protected static void SavePrefabToFile(MyObjectBuilder_Definitions prefab, string name = null, bool replace = false, MyBlueprintTypeEnum type = MyBlueprintTypeEnum.LOCAL)
+        protected static void SavePrefabToFile(MyObjectBuilder_Definitions prefab, string name, bool replace = false, MyBlueprintTypeEnum type = MyBlueprintTypeEnum.LOCAL)
         { 
-            if (name == null)
-            {
-                name = MyUtils.StripInvalidChars(MyCubeBuilder.Static.Clipboard.CopiedGridsName);
-            }
+            //if (name == null)
+            //{
+            //    name = MyUtils.StripInvalidChars(MyCubeBuilder.Static.Clipboard.CopiedGridsName);
+            //}
+
+            Debug.Assert(name != null, "Name cannot be null");
 
             string file = "";
             if (type == MyBlueprintTypeEnum.LOCAL)
@@ -206,6 +152,7 @@ namespace Sandbox.Game.Gui
             }
         }
 
+#if !XB1 // XB1_NOWORKSHOP
         public static void Publish(MyObjectBuilder_Definitions prefab, string blueprintName, Action<ulong> publishCallback = null)
         {
             string file = Path.Combine(m_localBlueprintFolder, blueprintName);
@@ -237,7 +184,7 @@ namespace Sandbox.Game.Gui
                                             SavePrefabToFile(prefab, blueprintName, true);
                                             MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                                                 styleEnum: MyMessageBoxStyleEnum.Info,
-                                                messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextWorldPublished),
+                                                messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextWorldPublished),
                                                 messageCaption: new StringBuilder("BLUEPRINT PUBLISHED"),
                                                 callback: (a) =>
                                                 {
@@ -250,16 +197,16 @@ namespace Sandbox.Game.Gui
                                             switch (result)
                                             {
                                                 case Result.AccessDenied:
-                                                    error = MySpaceTexts.MessageBoxTextPublishFailed_AccessDenied;
+                                                    error = MyCommonTexts.MessageBoxTextPublishFailed_AccessDenied;
                                                     break;
                                                 default:
-                                                    error = MySpaceTexts.MessageBoxTextWorldPublishFailed;
+                                                    error = MyCommonTexts.MessageBoxTextWorldPublishFailed;
                                                     break;
                                             }
 
                                             MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                                                 messageText: MyTexts.Get(error),
-                                                messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionWorldPublishFailed)));
+                                                messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionWorldPublishFailed)));
                                         }
                                     });
                             }
@@ -303,8 +250,9 @@ namespace Sandbox.Game.Gui
                 objectBuilder.ShipBlueprints[0].CubeGrids[0].DisplayName = subItem.Title;
                 return objectBuilder;
             }
-            return null;
+			return null;
         }
+#endif // !XB1
 
         public static MyObjectBuilder_Definitions LoadPrefab(string filePath)
         {

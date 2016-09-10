@@ -75,17 +75,17 @@ namespace VRageRender
                     new[] { 
                         MyTextures.GetTexture(set.ColorMetalXZnY_Texture, null, MyTextureEnum.COLOR_METAL),
                         MyTextures.GetTexture(set.ColorMetalpY_Texture, null, MyTextureEnum.COLOR_METAL)
-                    }); 
+                    }, "VoxelMaterial CM Array " + set.ColorMetalXZnY_Texture.ToString()); 
             set.NormalGlossArray = new MyTextureArray(
                     new[] { 
                         MyTextures.GetTexture(set.NormalGlossXZnY_Texture, null, MyTextureEnum.NORMALMAP_GLOSS),
                         MyTextures.GetTexture(set.NormalGlossY_Texture, null, MyTextureEnum.NORMALMAP_GLOSS)
-                    });
+                    }, "VoxelMaterial NG Array " + set.NormalGlossXZnY_Texture.ToString());
             set.ExtArray = new MyTextureArray(
                     new[] { 
                         MyTextures.GetTexture(set.ExtXZnY_Texture, null, MyTextureEnum.EXTENSIONS),
                         MyTextures.GetTexture(set.ExtY_Texture, null, MyTextureEnum.EXTENSIONS) 
-                    });
+                    }, "VoxelMaterial EA Array " + set.ExtXZnY_Texture.ToString());
         }
     }
 
@@ -134,6 +134,21 @@ namespace VRageRender
         {
             return I1 > -1 || I2 > -1;
         }
+
+        private class comp : IEqualityComparer<MyVoxelMaterialTriple>
+        {
+            public bool Equals(MyVoxelMaterialTriple x, MyVoxelMaterialTriple y)
+            {
+                return x.I0 == y.I0 && x.I1 == y.I1 && x.I2 == y.I2;
+            }
+
+            public int GetHashCode(MyVoxelMaterialTriple obj)
+            {
+                return (obj.I0 << 16 | obj.I1 << 8 | obj.I2).GetHashCode();
+            }
+        }
+
+        public static readonly IEqualityComparer<MyVoxelMaterialTriple> Comparer = new comp();
     }
 
     struct MaterialFoliageConstantsElem

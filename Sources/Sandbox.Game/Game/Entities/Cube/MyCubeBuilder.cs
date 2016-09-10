@@ -4,7 +4,6 @@ using Havok;
 using Sandbox.Common;
 using Sandbox.Common.ObjectBuilders;
 using Sandbox.Common.ObjectBuilders.Definitions;
-using Sandbox.Common.ObjectBuilders.Voxels;
 using Sandbox.Definitions;
 using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
@@ -15,6 +14,7 @@ using Sandbox.Game.Gui;
 using Sandbox.Game.GUI;
 using Sandbox.Game.Localization;
 using Sandbox.Game.Multiplayer;
+using Sandbox.Game.GameSystems;
 using Sandbox.Game.Screens.Helpers;
 using Sandbox.Game.SessionComponents;
 using Sandbox.Game.World;
@@ -34,27 +34,63 @@ using VRageMath;
 using VRageRender;
 using PlayerId = Sandbox.Game.World.MyPlayer.PlayerId;
 using Sandbox.Game.EntityComponents;
+using Sandbox.Engine.Multiplayer;
+using Sandbox.Game.Replication;
+using VRage.Network;
+using Sandbox.Game.GameSystems.CoordinateSystem;
+using VRage.Game.Components;
+using VRage.Game.Models;
+using VRage.Game.Entity;
+using VRage.Game;
+using VRage.OpenVRWrapper;
+using Sandbox.Game.Audio;
+using Sandbox.Game.Entities.Cube.CubeBuilder;
+using Sandbox.Game.GameSystems.ContextHandling;
+using VRage.Game.Components.Session;
+using VRage.Game.ObjectBuilders.Definitions.SessionComponents;
 
 #endregion
 
 namespace Sandbox.Game.Entities
 {
     [MySessionComponentDescriptor(MyUpdateOrder.BeforeSimulation)]
-    public partial class MyCubeBuilder : MyBlockBuilderBase
+    [StaticEventOwner]
+    public partial class MyCubeBuilder : MyBlockBuilderBase, IMyFocusHolder
     {
-        // These are names of ME controls. It's a hack to avoid defining them twice (in Sandbox.Game and Medieval).
-        public const string ME_SWITCH_STAGES_CONTROL_NAME = "SWITCH_STAGES";
-        public const string ME_PICK_BLOCK_CONTROL_NAME = "PICK_BLOCK";
-        public const string ME_COMPOUND_BUILDING_CONTROL_NAME = "COMPOUND_BUILDING";
-        public const string ME_SI_VIEW_NAME = "SI_VIEW";
-        public const string ME_PRESS_TO_COMPOUND_NAME = "PRESS_TO_COMPOUND";
-        private static readonly MyStringId ME_SWITCH_STAGES = MyStringId.GetOrCompute(ME_SWITCH_STAGES_CONTROL_NAME);
-        private static readonly MyStringId ME_PICK_BLOCK = MyStringId.GetOrCompute(ME_PICK_BLOCK_CONTROL_NAME);
-        private static readonly MyStringId ME_SI_VIEW = MyStringId.GetOrCompute(ME_SI_VIEW_NAME);
-        private static readonly MyStringId ME_PRESS_TO_COMPOUND = MyStringId.GetOrCompute(ME_PRESS_TO_COMPOUND_NAME);
+        public override Type[] Dependencies
+        {
+            get
+            {
+                Type[] dependencies = new Type[base.Dependencies.Length + 1];
+                for (int i = 0; i < base.Dependencies.Length; i++)
+                    dependencies[i] = base.Dependencies[i];
+                dependencies[dependencies.Length - 1] = typeof(MyToolbarComponent);
+                return dependencies;
+            }
+        }
 
-        protected static float BLOCK_ROTATION_SPEED = 0.002f;
+        #region Structs
 
+        struct BuildData
+        { 
+            public Vector3D Position;
+            public Vector3 Forward;
+            public Vector3 Up;
+        }
+
+        [Flags]
+        public enum SpawnFlags : ushort
+        {
+            None                          = 0,
+            AddToScene                    = 1 << 0,
+            CreatePhysics                 = 1 << 1,
+            EnableSmallTolargeConnections = 1 << 2,
+            SpawnAsMaster                 = 1 << 3,
+
+            Default                       = AddToScene | CreatePhysics | EnableSmallTolargeConnections
+        }
+
+        #endregion
 
         #region Enums
 
@@ -69,366 +105,15 @@ namespace Sandbox.Game.Entities
 
         #region Fields
 
-        public override bool IsRequiredByGame
-        {
-            get { return base.IsRequiredByGame && (MyPerGameSettings.Game != GameEnum.ME_GAME || !MyFakes.ENABLE_CUBE_BUILDER_MULTIBLOCK); }
-        }
-
-        class BlockPair
-        {
-            public MyCubeBlockDefinition Small;
-            public MyCubeBlockDefinition Large;
-        }
+        #region Static
 
         public static MyCubeBuilder Static;
 
-        public static BuildingModeEnum BuildingMode
-        {
-            get
-            {
-                int val = MySandboxGame.Config.CubeBuilderBuildingMode;
-                if (!Enum.IsDefined(typeof(BuildingModeEnum), val))
-                    val = 0;
-                return (BuildingModeEnum)val;
-            }
-            set
-            {
-                MySandboxGame.Config.CubeBuilderBuildingMode = (int)value;
-            }
-        }
-
-        struct MyColoringArea
-        {
-            public Vector3I Start;
-            public Vector3I End;
-        }
+        protected static float BLOCK_ROTATION_SPEED = 0.002f;
 
         static MyColoringArea[] m_currColoringArea = new MyColoringArea[8];
 
         static List<Vector3I> m_cacheGridIntersections = new List<Vector3I>();
-        List<Vector3> m_collisionTestPoints = new List<Vector3>(12);
-
-        //static MyGridClipboard m_clipboard = new MyGridClipboard(MyPerGameSettings.PastingSettings, calculateVelocity: true);
-        static MyGridClipboard m_clipboard = MyFakes.ENABLE_ADVANCED_CLIPBOARD ? new MyGridClipboardAdvanced(MyPerGameSettings.PastingSettings, calculateVelocity: true)
-            : new MyGridClipboard(MyPerGameSettings.PastingSettings, calculateVelocity: true);
-        public MyGridClipboard Clipboard
-        {
-            get { return m_clipboard; }
-        }
-
-        static MyFloatingObjectClipboard m_floatingObjectClipboard = new MyFloatingObjectClipboard(true);
-        internal MyFloatingObjectClipboard FloatingObjectClipboard
-        {
-            get { return m_floatingObjectClipboard; }
-        }
-
-        static MyGridClipboard m_shipCreationClipboard = new MyGridClipboard(MyPerGameSettings.CreationSettings, calculateVelocity: false);
-        internal MyGridClipboard ShipCreationClipboard
-        {
-            get { return m_shipCreationClipboard; }
-        }
-
-        static MyVoxelClipboard m_voxelClipboard = new MyVoxelClipboard();
-        internal MyVoxelClipboard VoxelClipboard
-        {
-            get { return m_voxelClipboard; }
-        }
-
-        private static MyMultiBlockClipboard m_multiBlockCreationClipboard = new MyMultiBlockClipboard(MyPerGameSettings.BuildingSettings, calculateVelocity: true);
-
-        protected bool m_rotationHintRotating = false;
-        private int m_lastInputHandleTime;
-
-        protected MyBlockBuilderRotationHints m_rotationHints = new MyBlockBuilderRotationHints();
-        protected MyBlockBuilderRenderData m_renderData = new MyBlockBuilderRenderData();
-
-        public bool CopyPasteVoxelIsActivated
-        {
-            get
-            {
-                return m_voxelClipboard.IsActive;
-            }
-        }
-
-        public bool CopyPasteFloatingObjectIsActivated
-        {
-            get
-            {
-                return m_floatingObjectClipboard.IsActive;
-            }
-        }
-
-        public bool CopyPasteIsActivated
-        {
-            get
-            {
-                return m_clipboard.IsActive;
-            }
-        }
-
-        public bool ShipCreationIsActivated
-        {
-            get
-            {
-                return m_shipCreationClipboard.IsActive;
-            }
-        }
-
-        public bool MultiBlockCreationIsActivated
-        {
-            get
-            {
-                return MyFakes.ENABLE_MULTIBLOCKS && m_multiBlockCreationClipboard.IsActive;
-            }
-        }
-
-        public bool CompoundEnabled { get; private set; }
-
-
-        private bool m_blockCreationActivated;
-        public bool BlockCreationIsActivated
-        {
-            get { return m_blockCreationActivated; }
-            private set { m_blockCreationActivated = value; }
-        }
-
-        public override bool IsActivated
-        {
-            get
-            {
-                return BlockCreationIsActivated || CopyPasteIsActivated || ShipCreationIsActivated || CopyPasteFloatingObjectIsActivated || CopyPasteVoxelIsActivated || MultiBlockCreationIsActivated;
-            }
-        }
-
-        bool m_useSymmetry = true;
-        public bool UseSymmetry
-        {
-            get { return m_useSymmetry && (MySession.Static != null && MySession.Static.CreativeMode); }
-            set
-            {
-                if (m_useSymmetry != value)
-                {
-                    m_useSymmetry = value;
-                    MySandboxGame.Config.CubeBuilderUseSymmetry = value;
-                    MySandboxGame.Config.Save();
-                }
-            }
-        }
-
-        /// <summary>
-        /// Store last rotation for each block definition.
-        /// </summary>
-        private Dictionary<MyDefinitionId, Quaternion> m_rotationsByDefinitionHash = new Dictionary<MyDefinitionId, Quaternion>(MyDefinitionId.Comparer);
-
-        private bool m_useTransparency = true;
-        public bool UseTransparency
-        {
-            get { return m_useTransparency; }
-            set
-            {
-                if (m_useTransparency != value)
-                {
-                    m_useTransparency = value;
-                    m_renderData.ClearInstanceData();
-                    m_rotationHints.Clear();
-
-                    m_renderData.UpdateRenderInstanceData();
-                    if (CurrentGrid != null)
-                    {
-                        m_renderData.UpdateRenderEntitiesData(CurrentGrid.WorldMatrix, UseTransparency);
-                    }
-                }
-            }
-        }
-
-        public bool FreezeGizmo { get; set; }
-
-        public bool ShowRemoveGizmo { get; set; }
-        public Vector3? MaxGridDistanceFrom = null;
-        private bool AllowFreeSpacePlacement = true;
-        private float FreeSpacePlacementDistance = 20;
-        private StringBuilder m_cubeCountStringBuilder = new StringBuilder(10);
-
-		public static Dictionary<PlayerId, List<Vector3>> AllPlayersColors = null;
-
-        const int MAX_CUBES_BUILT_AT_ONCE = 2048;
-        const int MAX_CUBES_BUILT_IN_ONE_AXIS = 255;
-        const float CONTINUE_BUILDING_VIEW_ANGLE_CHANGE_THRESHOLD = 0.998f;
-        const float CONTINUE_BUILDING_VIEW_POINT_CHANGE_THRESHOLD = 0.25f;
-
-        private MyCubeBuilderGizmo m_gizmo;
-
-        MySymmetrySettingModeEnum m_symmetrySettingMode = MySymmetrySettingModeEnum.NoPlane;
-
-        Vector3D m_initialIntersectionStart;
-        Vector3D m_initialIntersectionDirection;
-
-        protected internal override MyCubeGrid CurrentGrid
-        {
-            get { return m_currentGrid; }
-            protected set
-            {
-                if (FreezeGizmo)
-                    return;
-
-                if (m_currentGrid != value)
-                {
-                    m_currentGrid = value;
-                    UpdateNotificationBlockNotAvailable();
-
-                    if (m_currentGrid == null)
-                    {
-                        RemoveSymmetryNotification();
-
-                        m_gizmo.Clear();
-                    }
-                }
-            }
-        }
-        private int m_variantIndex = -1;
-
-        protected internal override MyVoxelMap CurrentVoxelMap
-        {
-            get
-            {
-                if (MyFakes.ENABLE_BLOCK_PLACEMENT_ON_VOXEL)
-                    return m_currentVoxelMap;
-                return null;
-            }
-
-            protected set
-            {
-                if (FreezeGizmo)
-                    return;
-
-                if (m_currentVoxelMap != value)
-                {
-                    m_currentVoxelMap = value;
-                    UpdateNotificationBlockNotAvailable();
-
-                    if (m_currentVoxelMap == null)
-                    {
-                        RemoveSymmetryNotification();
-
-                        m_gizmo.Clear();
-                    }
-                }
-            }
-        }
-
-        private List<MyCubeBlockDefinition> CurrentBlockDefinitionStages = new List<MyCubeBlockDefinition>();
-        private Dictionary<MyDefinitionId, int> m_stageIndexByDefinitionHash = new Dictionary<MyDefinitionId, int>(MyDefinitionId.Comparer);
-
-        private MyCubeBlockDefinitionWithVariants m_definitionWithVariants;
-        protected override MyCubeBlockDefinition CurrentBlockDefinition
-        {
-            get
-            {
-                return m_definitionWithVariants;
-            }
-            set
-            {
-                if (value == null)
-                {
-                    m_definitionWithVariants = null;
-                    CurrentBlockDefinitionStages.Clear();
-                }
-                else
-                {
-                    m_definitionWithVariants = new MyCubeBlockDefinitionWithVariants(value, m_variantIndex);
-
-                    if (MyFakes.ENABLE_BLOCK_STAGES)
-                    {
-                        if (!CurrentBlockDefinitionStages.Contains(value))
-                        {
-                            CurrentBlockDefinitionStages.Clear();
-
-                            if (value.BlockStages != null)
-                            {
-                                // First add this stage (main block definition from GUI)
-                                CurrentBlockDefinitionStages.Add(value);
-
-                                foreach (var stage in value.BlockStages)
-                                {
-                                    MyCubeBlockDefinition stageDef;
-                                    MyDefinitionManager.Static.TryGetCubeBlockDefinition(stage, out stageDef);
-                                    if (stageDef != null)
-                                        CurrentBlockDefinitionStages.Add(stageDef);
-                                }
-                            }
-                        }
-                    }
-                }
-                UpdateNotificationBlockNotAvailable();
-            }
-        }
-
-        public override MyCubeBlockDefinition HudBlockDefinition
-        {
-            get
-            {
-                if (m_shipCreationClipboard.IsActive)
-                    return m_shipCreationClipboard.GetFirstBlockDefinition();
-                else
-                    return CurrentBlockDefinition;
-            }
-        }
-
-        /// <summary>
-        /// Current block definition for toolbar.
-        /// </summary>
-        public MyCubeBlockDefinition ToolbarBlockDefinition
-        {
-            get
-            {
-                if (MyFakes.ENABLE_BLOCK_STAGES)
-                {
-                    if (CurrentBlockDefinitionStages.Count > 0)
-                        return CurrentBlockDefinitionStages[0];
-                }
-                return CurrentBlockDefinition;
-            }
-        }
-
-        int m_modelIndex = 1;
-
-        MyHudNotification m_blockNotAvailableNotification;
-        MyHudNotification m_symmetryNotification;
-        MyHudNotification m_pasteNotification;
-        MyHudNotification m_stationRotationNotification;
-
-        private bool m_dynamicMode;
-        public bool DynamicMode
-        {
-            get
-            {
-                return MyFakes.ENABLE_CUBE_BUILDER_DYNAMIC_MODE && m_dynamicMode;
-            }
-
-            set
-            {
-                m_dynamicMode = MyFakes.ENABLE_CUBE_BUILDER_DYNAMIC_MODE && value;
-            }
-        }
-
-        // Simple survival build delay time - for now disabled
-        private static int SURVIVAL_BUILD_TIME_DELAY_MS = 0;
-        private int m_lastBlockBuildTime = 0;
-
-        private bool m_isBuildMode = false;
-        public bool IsBuildMode
-        {
-            get { return m_isBuildMode; }
-            private set 
-            { 
-                m_isBuildMode = value;
-                MyHud.IsBuildMode = value;
-                if (value)
-                    ActivateBuildModeNotifications(MyInput.Static.IsJoystickConnected() && MyFakes.ENABLE_CONTROLLER_HINTS);
-                else
-                    DeactivateBuildModeNotifications();
-            }
-        }
 
         public static MyBuildComponentBase BuildComponent { get; set; }
 
@@ -446,7 +131,273 @@ namespace Sandbox.Game.Entities
         private static MyHudNotification JoystickCompoundModeHint;
         private static MyHudNotification JoystickDynamicModeHint;
 
+        private static int m_cycle = 0;
+
+        public static Dictionary<PlayerId, List<Vector3>> AllPlayersColors = null;
+
+        #endregion
+
+        //public override bool IsRequiredByGame
+        //{
+        //    get
+        //    {
+        //        return base.IsRequiredByGame && MyPerGameSettings.Game == GameEnum.SE_GAME;
+        //    }
+        //}
+
+        protected bool canBuild = true;
+
+        struct MyColoringArea
+        {
+            public Vector3I Start;
+            public Vector3I End;
+        }
+
+        List<Vector3D> m_collisionTestPoints = new List<Vector3D>(12);
+
+        private int m_lastInputHandleTime;
+
+        private bool m_alignToDefault = false;
+        private int m_lastDefault = 0;
+
+        protected MyBlockBuilderRotationHints m_rotationHints = new MyBlockBuilderRotationHints();
+        protected MyBlockBuilderRenderData m_renderData = new MyBlockBuilderRenderData();
+
+
+        public bool CompoundEnabled { get; protected set; }
+
+
+        private bool m_blockCreationActivated;
+        public bool BlockCreationIsActivated
+        {
+            get { return m_blockCreationActivated; }
+            private set { m_blockCreationActivated = value; }
+        }
+
+        public override bool IsActivated
+        {
+            get { return BlockCreationIsActivated; }
+            }
+
+        bool m_useSymmetry = false;
+        public bool UseSymmetry
+        {
+            get { return m_useSymmetry && (MySession.Static != null && (MySession.Static.CreativeMode || MySession.Static.IsAdminModeEnabled(Sync.MyId))) && !(MySession.Static.ControlledEntity is MyShipController); }
+            set
+            {
+                if (m_useSymmetry != value)
+                {
+                    m_useSymmetry = value;
+                    MySandboxGame.Config.CubeBuilderUseSymmetry = value;
+                    MySandboxGame.Config.Save();
+                }
+            }
+        }
+
+        private bool m_useTransparency = true;
+        public bool UseTransparency
+        {
+            get { return m_useTransparency; }
+            set
+            {
+                if (m_useTransparency != value)
+                {
+                    m_useTransparency = value;
+                    m_renderData.ClearInstanceData();
+                    m_rotationHints.Clear();
+
+                    m_renderData.UpdateRenderInstanceData();
+                    if (CurrentGrid != null)
+                    {
+                        m_renderData.UpdateRenderEntitiesData(CurrentGrid.WorldMatrix, UseTransparency, CurrentGrid.GridScale);
+                    }
+                }
+            }
+        }
+
+        public bool FreezeGizmo { get; set; }
+
+        public bool ShowRemoveGizmo { get; set; }
+        public Vector3? MaxGridDistanceFrom = null;
+        private bool AllowFreeSpacePlacement = true;
+        private float FreeSpacePlacementDistance = 20;
+        private StringBuilder m_cubeCountStringBuilder = new StringBuilder(10);
+
+        const int MAX_CUBES_BUILT_AT_ONCE = 2048;
+        const int MAX_CUBES_BUILT_IN_ONE_AXIS = 255;
+        const float CONTINUE_BUILDING_VIEW_ANGLE_CHANGE_THRESHOLD = 0.998f;
+        const float CONTINUE_BUILDING_VIEW_POINT_CHANGE_THRESHOLD = 0.25f;
+
+        protected MyCubeBuilderGizmo m_gizmo;
+
+        MySymmetrySettingModeEnum m_symmetrySettingMode = MySymmetrySettingModeEnum.NoPlane;
+
+        Vector3D m_initialIntersectionStart;
+        Vector3D m_initialIntersectionDirection;
+
+        protected MyCubeBuilderState m_cubeBuildlerState;
+
+        protected MyCoordinateSystem.CoordSystemData m_lastLocalCoordSysData;
+
+        public MyCubeBuilderState CubeBuilderState 
+        {
+            get
+            {
+                return m_cubeBuildlerState; 
+            }
+        }
+
+        protected internal override MyCubeGrid CurrentGrid
+        {
+            get { return m_currentGrid; }
+            protected set
+            {
+                if (FreezeGizmo)
+                    return;
+
+                if (m_currentGrid != value)
+                {
+                    BeforeCurrentGridChange(value);
+                    m_currentGrid = value;
+                    UpdateNotificationBlockNotAvailable();
+
+                    if (m_currentGrid == null)
+                    {
+                        RemoveSymmetryNotification();
+
+                        m_gizmo.Clear();
+                    }
+                }
+            }
+        }
+
+        protected internal override MyVoxelBase CurrentVoxelBase
+        {
+            get
+            {
+                //if (MyFakes.ENABLE_BLOCK_PLACEMENT_ON_VOXEL) // TODO: check this fake?
+                    return m_currentVoxelBase;
+            }
+
+            protected set
+            {
+                if (FreezeGizmo)
+                    return;
+
+                if (m_currentVoxelBase != value)
+                {
+                    m_currentVoxelBase = value;
+                    UpdateNotificationBlockNotAvailable();
+
+                    if (m_currentVoxelBase == null)
+                    {
+                        RemoveSymmetryNotification();
+
+                        m_gizmo.Clear();
+                    }
+                }
+            }
+        }
+
+        protected override MyCubeBlockDefinition CurrentBlockDefinition
+        {
+            get { return m_cubeBuildlerState.CurrentBlockDefinition; }
+            set
+            {
+                m_cubeBuildlerState.CurrentBlockDefinition = value;
+                UpdateNotificationBlockNotAvailable();
+            }
+        }
+
+        /// <summary>
+        /// Current block definition for toolbar.
+        /// </summary>
+        public MyCubeBlockDefinition ToolbarBlockDefinition
+        {
+            get
+            {
+                if (m_cubeBuildlerState == null)
+                    return null;
+
+                if (MyFakes.ENABLE_BLOCK_STAGES)
+                {
+                    if (m_cubeBuildlerState.CurrentBlockDefinitionStages.Count > 0)
+                        return m_cubeBuildlerState.CurrentBlockDefinitionStages[0];
+                }
+                return CurrentBlockDefinition;
+            }
+        }
+
+        MyHudNotification m_blockNotAvailableNotification;
+        MyHudNotification m_symmetryNotification;
+
+        private bool m_dynamicMode;
+
+        private bool m_isBuildMode = false;
+
         private MyHudNotification m_buildModeHint;
+
+        #endregion
+
+        #region Properties
+
+        public static BuildingModeEnum BuildingMode
+        {
+            get
+            {
+                int val = MySandboxGame.Config.CubeBuilderBuildingMode;
+                if (!Enum.IsDefined(typeof(BuildingModeEnum), val))
+                    val = 0;
+                return (BuildingModeEnum)val;
+            }
+            set
+            {
+                MySandboxGame.Config.CubeBuilderBuildingMode = (int)value;
+            }
+        }
+
+        ///// <summary>
+        ///// Defines default block building distance set on start building.
+        ///// </summary>
+        //protected virtual float DefaultBlockBuildingDistance
+        //{
+        //    get { return DEFAULT_BLOCK_BUILDING_DISTANCE; }
+        //}
+
+        ///// <summary>
+        ///// Indicates if cube builder cube size modes feature is avaliable.
+        ///// </summary>
+        public virtual bool IsCubeSizeModesAvailable
+        {
+            get { return true; }
+        }
+
+        public bool IsBuildMode
+        {
+            get { return m_isBuildMode; }
+            set 
+            { 
+                m_isBuildMode = value;
+                MyHud.IsBuildMode = value;
+                if (value)
+                    ActivateBuildModeNotifications(MyInput.Static.IsJoystickConnected() && MyFakes.ENABLE_CONTROLLER_HINTS);
+                else
+                    DeactivateBuildModeNotifications();
+            }
+        }
+
+        public bool DynamicMode
+        {
+            get
+            {
+                return m_dynamicMode;
+        }
+
+            set
+        {
+                m_dynamicMode = value;
+        }
+        }
 
         #endregion
 
@@ -468,8 +419,15 @@ namespace Sandbox.Game.Entities
 
         #region Load data
 
+        public override void InitFromDefinition(MySessionComponentDefinition definition)
+        {
+            base.InitFromDefinition(definition);
+        }
+
         public override void LoadData()
         {
+            base.LoadData();
+            m_cubeBuildlerState = new MyCubeBuilderState();
             Static = this;
             MyCubeGrid.ShowStructuralIntegrity = false;
         }
@@ -496,54 +454,37 @@ namespace Sandbox.Game.Entities
         {
             get
             {
-                return BlockCreationIsActivated && MyFakes.ENABLE_BLOCK_PLACEMENT_ON_VOXEL && CurrentVoxelMap != null
-                    && CurrentBlockDefinition != null && (CurrentBlockDefinition.CubeSize == MyCubeSize.Large || CurrentBlockDefinition.CubeSize == MyCubeSize.Small);
+                return BlockCreationIsActivated && CurrentVoxelBase != null && CurrentBlockDefinition != null;
             }
         }
 
-        protected bool PlacingSmallGridOnLargeStatic
+        public bool PlacingSmallGridOnLargeStatic
         {
             get
             {
-                return GridValid && CurrentBlockDefinition != null && MyFakes.ENABLE_STATIC_SMALL_GRID_ON_LARGE && CurrentBlockDefinition.CubeSize == MyCubeSize.Small
+                return MyFakes.ENABLE_STATIC_SMALL_GRID_ON_LARGE && GridValid && CurrentBlockDefinition != null && CurrentBlockDefinition.CubeSize == MyCubeSize.Small
                     && CurrentGrid.GridSizeEnum == MyCubeSize.Large && CurrentGrid.IsStatic;
             }
         }
 
         protected bool BuildInputValid
         {
-            get { return GridAndBlockValid || VoxelMapAndBlockValid || (DynamicMode && (CurrentBlockDefinition != null || m_multiBlockCreationClipboard.IsActive)); }
+            get { return GridAndBlockValid || VoxelMapAndBlockValid || DynamicMode; }
         }
 
-        protected virtual void RotateAxis(int index, int sign, bool newlyPressed, int frameDt)
+        private float CurrentBlockScale
         {
-            if (CurrentBlockDefinition != null && CurrentBlockDefinition.Rotation == MyBlockRotation.None)
-                return;
-
-            float angleDelta = frameDt * BLOCK_ROTATION_SPEED;
-
-            if (ShipCreationIsActivated)
-                m_shipCreationClipboard.RotateAroundAxis(index, sign, newlyPressed, angleDelta);
-            else if (CopyPasteIsActivated)
-                m_clipboard.RotateAroundAxis(index, sign, newlyPressed, angleDelta);
-            else if (CopyPasteFloatingObjectIsActivated)
-                m_floatingObjectClipboard.RotateAroundAxis(index, sign, newlyPressed, angleDelta);
-            else if (MultiBlockCreationIsActivated && m_multiBlockCreationClipboard.PreviewGrids.Count > 0)
+            get
             {
-                if (!DynamicMode)
-                {
-                    MatrixD currentMatrix = m_multiBlockCreationClipboard.PreviewGrids[0].PositionComp.LocalMatrix;
-                    MatrixD rotatedMatrix;
-                    if (!CalculateBlockRotation(index, sign, ref currentMatrix, out rotatedMatrix, (float)Math.PI / 2, CurrentBlockDefinition != null ? CurrentBlockDefinition.Direction : MyBlockDirection.Both,
-                        CurrentBlockDefinition != null ? CurrentBlockDefinition.Rotation : MyBlockRotation.Both))
-                        return;
-                }
-                m_multiBlockCreationClipboard.RotateAroundAxis(index, sign, newlyPressed, angleDelta);
+                if (CurrentBlockDefinition == null)
+                    return 1f;
 
-                // If multiblock creation is activated then block builder is deactivated so we return here or gizmo will be rotated
-                return;
+                return MyDefinitionManager.Static.GetCubeSize(CurrentBlockDefinition.CubeSize) / MyDefinitionManager.Static.GetCubeSizeOriginal(CurrentBlockDefinition.CubeSize);
             }
+        }
 
+        protected virtual void RotateAxis(int index, int sign, float angleDelta, bool newlyPressed)
+        {
             if (DynamicMode)
             {
                 MatrixD currentMatrix = m_gizmo.SpaceDefault.m_worldMatrixAdd;
@@ -579,7 +520,6 @@ namespace Sandbox.Game.Entities
             MyBlockDirection blockDirection = MyBlockDirection.Both, MyBlockRotation blockRotation = MyBlockRotation.Both)
         {
             Matrix rotation = Matrix.Identity;
-            rotatedMatrix = Matrix.Identity;
 
             //because Z axis is negative
             if (index == 2)
@@ -610,34 +550,27 @@ namespace Sandbox.Game.Entities
             return CheckValidBlockRotation(rotatedMatrix, blockDirection, blockRotation);
         }
 
-        public void ActivateBlockCreation(MyDefinitionId? blockDefinitionId = null)
+        private void ActivateBlockCreation(MyDefinitionId? blockDefinitionId = null)
         {
             if (MySession.Static.CameraController == null || !MySession.Static.CameraController.AllowCubeBuilding)
             {
-                return;
+            //    return;
             }
+
+            if (MySession.Static.ControlledEntity is MyShipController && (MySession.Static.ControlledEntity as MyShipController).BuildingMode == false) return;
 
             UpdateCubeBlockDefinition(blockDefinitionId);
 
-            if (CopyPasteIsActivated)
-                IntersectionDistance = DEFAULT_BLOCK_BUILDING_DISTANCE;
-            m_clipboard.Deactivate();
-            m_floatingObjectClipboard.Deactivate();
-            m_voxelClipboard.Deactivate();
-            m_shipCreationClipboard.Deactivate();
+            if (MySession.Static.SurvivalMode && !SpectatorIsBuilding && MySession.Static.IsAdminModeEnabled(Sync.MyId) == false)
+                IntersectionDistance = (float)CubeBuilderDefinition.BuildingDistSurvivalCharacter;
+            else
+                IntersectionDistance = CubeBuilderDefinition.DefaultBlockBuildingDistance;
 
-            if (!MyFakes.ENABLE_MULTIBLOCKS || !MultiBlockCreationIsActivated)
-                m_multiBlockCreationClipboard.Deactivate();
 
             if (MySession.Static.CreativeMode)
             {
                 AllowFreeSpacePlacement = false;
                 MaxGridDistanceFrom = null;
-                ShowRemoveGizmo = MyFakes.SHOW_REMOVE_GIZMO;
-            }
-            else if (MySession.Static.SimpleSurvival)
-            {
-                AllowFreeSpacePlacement = false;
                 ShowRemoveGizmo = MyFakes.SHOW_REMOVE_GIZMO;
             }
             else
@@ -648,17 +581,23 @@ namespace Sandbox.Game.Entities
 
             ActivateNotifications();
 
-            MyHud.Crosshair.Show(null);
+            if (!(MySession.Static.ControlledEntity is MyShipController) || (MySession.Static.ControlledEntity as MyShipController).BuildingMode == false) MyHud.Crosshair.ResetToDefault();
 
             MyCubeBuilder.Static.UpdateNotificationBlockNotAvailable();
 
-            BlockCreationIsActivated = !MultiBlockCreationIsActivated;
+            BlockCreationIsActivated = true;//!MultiBlockCreationIsActivated;
 
-            UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
+            this.AlignToGravity();
+
         }
 
         public void DeactivateBlockCreation()
         {
+            if (m_cubeBuildlerState.CurrentBlockDefinition != null)
+            {
+                m_cubeBuildlerState.UpdateCubeBlockDefinition(m_cubeBuildlerState.CurrentBlockDefinition.Id, m_gizmo.SpaceDefault.m_localMatrixAdd);
+            }
+
             BlockCreationIsActivated = false;
             DeactivateNotifications();
             MyCubeBuilder.Static.UpdateNotificationBlockNotAvailable();
@@ -708,6 +647,18 @@ namespace Sandbox.Game.Entities
             DeactivateBuildModeNotifications();
         }
 
+        /// <summary>
+        /// Allows to override normal behaviour of Cube builder.
+        /// </summary>
+        /// <returns></returns>
+        protected virtual bool IsDynamicOverride()
+        {
+            if (m_cubeBuildlerState.CurrentBlockDefinition == null || CurrentGrid == null)
+                return false;
+
+            return m_cubeBuildlerState.CurrentBlockDefinition.CubeSize == MyCubeSize.Small && CurrentGrid.GridSizeEnum == MyCubeSize.Large;
+        }
+
         private void ActivateBuildModeNotifications(bool joystick)
         {
             if (joystick)
@@ -717,7 +668,7 @@ namespace Sandbox.Game.Entities
                 MyHud.Notifications.Add(JoystickColorHint);
                 if (MyFakes.ENABLE_COMPOUND_BLOCKS)
                     MyHud.Notifications.Add(JoystickCompoundModeHint);
-                if (MyFakes.ENABLE_CUBE_BUILDER_DYNAMIC_MODE)
+                
                     MyHud.Notifications.Add(JoystickDynamicModeHint);
             }
             else
@@ -725,7 +676,7 @@ namespace Sandbox.Game.Entities
                 MyHud.Notifications.Add(BlockRotationHint);
                 if (MyFakes.ENABLE_COMPOUND_BLOCKS)
                     MyHud.Notifications.Add(CompoundModeHint);
-                if (MyFakes.ENABLE_CUBE_BUILDER_DYNAMIC_MODE)
+                
                     MyHud.Notifications.Add(DynamicModeHint);
             }
         }
@@ -745,12 +696,10 @@ namespace Sandbox.Game.Entities
                 MyHud.Notifications.Remove(JoystickCompoundModeHint);
             }
 
-            if (MyFakes.ENABLE_CUBE_BUILDER_DYNAMIC_MODE)
-            {
                 MyHud.Notifications.Remove(DynamicModeHint);
                 MyHud.Notifications.Remove(JoystickDynamicModeHint);
+            
             }
-        }
 
         private void InitializeNotifications()
         {
@@ -771,14 +720,14 @@ namespace Sandbox.Game.Entities
                 // This will combine controls which has name
                 var controlHelper = new MyHudNotifications.ControlsHelper(rotxp, rotxn, rotzp, rotzn, rotyp, rotyn);
 
-                BlockRotationHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationRotationFormatCombined, controlHelper);
-                ColorHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationColorFormat, next, prev, "MMB", "CTRL", "SHIFT");
-                BuildingHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationBuildingFormat, build);
-                UnlimitedBuildingHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationUnlimitedBuildingFormat, "LMB", "RMB", "CTRL");
+                BlockRotationHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationRotationFormatCombined, controlHelper);
+                ColorHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationColorFormat, next, prev, "MMB", "CTRL", "SHIFT");
+                BuildingHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationBuildingFormat, build);
+                UnlimitedBuildingHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationUnlimitedBuildingFormat, "LMB", "RMB", "CTRL");
                 if (MyFakes.ENABLE_COMPOUND_BLOCKS)
-                    CompoundModeHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationCompoundBuildingFormat, compoundToggle, "ALT");
-                if (MyFakes.ENABLE_CUBE_BUILDER_DYNAMIC_MODE)
-                    DynamicModeHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationSwitchBuildingModeFormat, buildingModeToggle);
+                    CompoundModeHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationCompoundBuildingFormat, compoundToggle, "ALT");
+                
+                    DynamicModeHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationSwitchBuildingModeFormat, buildingModeToggle);
                 m_buildModeHint = null;
             }
 
@@ -805,150 +754,88 @@ namespace Sandbox.Game.Entities
                 foreach (var c in rotation)
                     sb.Append(c);
 
-                JoystickRotationHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationRotationFormatCombined, sb.ToString().Trim());
+                JoystickRotationHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationRotationFormatCombined, sb.ToString().Trim());
                 JoystickColorHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationJoystickColorFormat, colorCode);
-                JoystickBuildingHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationBuildingFormat, primaryActionCode);
-                JoystickUnlimitedBuildingHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationJoystickUnlimitedBuildingFormat, primaryActionCode, secondaryActionCode);
+                JoystickBuildingHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationBuildingFormat, primaryActionCode);
+                JoystickUnlimitedBuildingHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationJoystickUnlimitedBuildingFormat, primaryActionCode, secondaryActionCode);
                 if (MyFakes.ENABLE_COMPOUND_BLOCKS)
-                    JoystickCompoundModeHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationJoystickCompoundBuildingFormat, compoundCode);
-                if (MyFakes.ENABLE_CUBE_BUILDER_DYNAMIC_MODE)
-                    JoystickDynamicModeHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationSwitchBuildingModeFormat, dynamicModeCode);
-                m_buildModeHint = MyHudNotifications.CreateControlNotification(MySpaceTexts.NotificationHintPressToOpenBuildMode, buildModeCode);
+                    JoystickCompoundModeHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationJoystickCompoundBuildingFormat, compoundCode);
+                
+                    JoystickDynamicModeHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationSwitchBuildingModeFormat, dynamicModeCode);
+                m_buildModeHint = MyHudNotifications.CreateControlNotification(MyCommonTexts.NotificationHintPressToOpenBuildMode, buildModeCode);
             }
         }
 
         public override void Deactivate()
         {
-            HideStationRotationNotification();
-            DeactivateShipCreationClipboard();
-            DeactivateCopyPaste();
-            DeactivateCopyPasteFloatingObject();
-            DeactivateMultiBlockClipboard();
             DeactivateBlockCreation();
+
             CurrentBlockDefinition = null;
+
             CurrentGrid = null;
-            CurrentVoxelMap = null;
+            CurrentVoxelBase = null;
             IsBuildMode = false;
 
             DynamicMode = false;
-            IntersectionDistance = DEFAULT_BLOCK_BUILDING_DISTANCE;
+            IntersectionDistance = CubeBuilderDefinition.DefaultBlockBuildingDistance;
+            //VR:TODO:check if this didnt break something
+            //PlacementProvider = null;
+            m_rotationHints.ReleaseRenderData();
+
+            MyCoordinateSystem.Static.Visible = false;
+
         }
 
-        public override void Activate()
+        public void OnLostFocus()
         {
-            if (MySession.Static.CameraController != null && MySession.Static.CameraController.AllowCubeBuilding)
-            {
-                Debug.Assert(!CopyPasteIsActivated || !ShipCreationIsActivated, "Both copy-paste and ship creation cannot be activated at the same time");
-                if (!CopyPasteIsActivated && !ShipCreationIsActivated)
-                {
-                    ActivateBlockCreation(CurrentBlockDefinition != null ? CurrentBlockDefinition.Id : (MyDefinitionId?)null);
-                }
-            }
+            this.Deactivate();
         }
 
-        private void UpdateCubeBlockStageDefinition(MyCubeBlockDefinition stageCubeBlockDefinition)
+        public override void Activate(MyDefinitionId? blockDefinitionId = null)
+        {
+            if (MySession.Static.CameraController != null)
+            {
+                MySession.Static.GameFocusManager.Register(this);
+            }
+
+            this.ActivateBlockCreation(blockDefinitionId);
+
+        }
+
+        protected virtual void UpdateCubeBlockStageDefinition(MyCubeBlockDefinition stageCubeBlockDefinition)
         {
             Debug.Assert(stageCubeBlockDefinition != null);
 
             CurrentBlockDefinition = stageCubeBlockDefinition;
 
-            if (MyFakes.ENABLE_MULTIBLOCKS)
-                UpdateMultiBlock(false);
+            m_gizmo.RotationOptions = MyCubeGridDefinitions.GetCubeRotationOptions(CurrentBlockDefinition);
         }
 
         protected virtual void UpdateCubeBlockDefinition(MyDefinitionId? id)
         {
-            if (id.HasValue)
-            {
-                if (CurrentBlockDefinition != null)
-                {
-                    var group = MyDefinitionManager.Static.GetDefinitionGroup(CurrentBlockDefinition.BlockPairName);
 
-                    if (CurrentBlockDefinitionStages.Count > 1)
-                    {
-                        group = MyDefinitionManager.Static.GetDefinitionGroup(CurrentBlockDefinitionStages[0].BlockPairName);
-                        if (group.Small != null)
-                            m_stageIndexByDefinitionHash[group.Small.Id] = CurrentBlockDefinitionStages.IndexOf(CurrentBlockDefinition);
+            m_cubeBuildlerState.UpdateCubeBlockDefinition(id, m_gizmo.SpaceDefault.m_localMatrixAdd);
 
-                        if (group.Large != null)
-                            m_stageIndexByDefinitionHash[group.Large.Id] = CurrentBlockDefinitionStages.IndexOf(CurrentBlockDefinition);
-                    }
+            if (CurrentBlockDefinition != null && IsCubeSizeModesAvailable)
+                m_cubeBuildlerState.UpdateComplementBlock();
 
-                    var rotation = Quaternion.CreateFromRotationMatrix(m_gizmo.SpaceDefault.m_localMatrixAdd);
-                    if (group.Small != null) m_rotationsByDefinitionHash[group.Small.Id] = rotation;
-                    if (group.Large != null) m_rotationsByDefinitionHash[group.Large.Id] = rotation;
+            m_cubeBuildlerState.UpdateBlockDefinitionStages(id);
 
-                }
-                var tmpDef = MyDefinitionManager.Static.GetCubeBlockDefinition(id.Value);
-                if (tmpDef.Public || MyFakes.ENABLE_NON_PUBLIC_BLOCKS)
-                    CurrentBlockDefinition = tmpDef;
-                else
-                {
-                    CurrentBlockDefinition = tmpDef.CubeSize == MyCubeSize.Large ?
-                        MyDefinitionManager.Static.GetDefinitionGroup(tmpDef.BlockPairName).Small :
-                        MyDefinitionManager.Static.GetDefinitionGroup(tmpDef.BlockPairName).Large;
-                }
+            if (m_cubeBuildlerState.CurrentBlockDefinition == null)
+                return;
 
-                if (CurrentBlockDefinition != null)
-                {
-                    m_gizmo.RotationOptions = MyCubeGridDefinitions.GetCubeRotationOptions(CurrentBlockDefinition);
-                    Quaternion lastRot;
+            m_gizmo.RotationOptions = MyCubeGridDefinitions.GetCubeRotationOptions(CurrentBlockDefinition);
+            Quaternion lastRot;
 
-                    MyDefinitionId defBlockId = id.Value;
-                    if (CurrentBlockDefinitionStages.Count > 1)
-                        defBlockId = CurrentBlockDefinitionStages[0].Id;
+            MyDefinitionId defBlockId = id.HasValue ? id.Value : new MyDefinitionId();
+            if (m_cubeBuildlerState.CurrentBlockDefinitionStages.Count > 1)
+                defBlockId = m_cubeBuildlerState.CurrentBlockDefinitionStages[0].Id;
 
-                    if (m_rotationsByDefinitionHash.TryGetValue(defBlockId, out lastRot))
-                        m_gizmo.SpaceDefault.m_localMatrixAdd = Matrix.CreateFromQuaternion(lastRot);
-                    else
-                        m_gizmo.SpaceDefault.m_localMatrixAdd = Matrix.Identity;
-
-                    if (CurrentBlockDefinitionStages.Count > 1)
-                    {
-                        int lastStage;
-                        if (m_stageIndexByDefinitionHash.TryGetValue(defBlockId, out lastStage))
-                        {
-                            if (lastStage >= 0 && lastStage < CurrentBlockDefinitionStages.Count)
-                                CurrentBlockDefinition = CurrentBlockDefinitionStages[lastStage];
-                        }
-                    }
-
-                    if (MyFakes.ENABLE_MULTIBLOCKS)
-                        UpdateMultiBlock(true);
-                }
-            }
-        }
-
-        protected virtual void UpdateMultiBlock(bool resetOrientation)
-        {
-            Matrix orientationMatrix = m_gizmo.SpaceDefault.m_localMatrixAdd;
-
-            if (m_multiBlockCreationClipboard.IsActive)
-            {
-                if (!resetOrientation)
-                    orientationMatrix = m_multiBlockCreationClipboard.GetFirstGridOrientationMatrix();
-
-                m_multiBlockCreationClipboard.Deactivate();
-            }
-
-            if (CurrentBlockDefinition.MultiBlock != null)
-            {
-                MyDefinitionId defId = new MyDefinitionId(typeof(MyObjectBuilder_MultiBlockDefinition), CurrentBlockDefinition.MultiBlock);
-                MyMultiBlockDefinition multiBlockDef = MyDefinitionManager.Static.GetMultiBlockDefinition(defId);
-                if (multiBlockDef != null)
-                {
-                    StartNewGridPlacement(multiBlockDef, orientationMatrix);
-                }
-                else
-                {
-                    Debug.Assert(false);
-                    CurrentBlockDefinition = null;
-                }
-            }
+            if (m_cubeBuildlerState.RotationsByDefinitionHash.TryGetValue(defBlockId, out lastRot))
+                m_gizmo.SpaceDefault.m_localMatrixAdd = Matrix.CreateFromQuaternion(lastRot);
             else
-            {
-                BlockCreationIsActivated = true;
-            }
+                m_gizmo.SpaceDefault.m_localMatrixAdd = Matrix.Identity;
+
         }
 
         #endregion
@@ -958,7 +845,7 @@ namespace Sandbox.Game.Entities
         public void AddFastBuildModels(MatrixD baseMatrix, ref Matrix localMatrixAdd, List<MatrixD> matrices, List<string> models, MyCubeBlockDefinition definition,
             Vector3I? startBuild, Vector3I? continueBuild)
         {
-            AddFastBuildModelWithSubparts(ref baseMatrix, matrices, models, definition);
+            AddFastBuildModelWithSubparts(ref baseMatrix, matrices, models, definition, CurrentBlockScale);
 
             // Can be CurrentBlockDefinition != definition?
             if (CurrentBlockDefinition != null && startBuild != null && continueBuild != null)
@@ -996,7 +883,8 @@ namespace Sandbox.Game.Entities
 
                             var matrix = baseMatrix;
                             matrix.Translation += offsetFloat;
-                            AddFastBuildModelWithSubparts(ref matrix, matrices, models, definition);
+
+                            AddFastBuildModelWithSubparts(ref matrix, matrices, models, definition, CurrentBlockScale);
                         }
                     }
                 }
@@ -1008,67 +896,289 @@ namespace Sandbox.Game.Entities
             AddFastBuildModels(baseMatrix, ref gizmoSpace.m_localMatrixAdd, matrices, models, definition, gizmoSpace.m_startBuild, gizmoSpace.m_continueBuild);
         }
 
-        private void ShowStationRotationNotification()
+        public void AlignToGravity(bool alignToCamera = true)
         {
-            if (m_stationRotationNotification == null && m_shipCreationClipboard.EnableStationRotation)
-                m_stationRotationNotification = new MyHudNotification(MySpaceTexts.NotificationStationRotation, 0, priority: 1);
+         
+            Vector3 gravity = MyGravityProviderSystem.CalculateNaturalGravityInPoint(IntersectionStart);
+            if (gravity.LengthSquared() < Double.Epsilon && MyPerGameSettings.Game == GameEnum.ME_GAME)
+            {
+                gravity = Vector3.Down;
+            }
 
-            if (m_shipCreationClipboard.EnableStationRotation)
+            if (gravity.LengthSquared() > 0)
             {
-                MyHud.Notifications.Add(m_stationRotationNotification);
+                Matrix oldTransform = m_gizmo.SpaceDefault.m_worldMatrixAdd;
+                gravity.Normalize();
+
+                Vector3D newForward;
+
+                if (MySector.MainCamera != null && alignToCamera)
+                {
+                    newForward = Vector3D.Reject(MySector.MainCamera.ForwardVector, gravity);
+                }
+                else
+                {
+                    newForward = Vector3D.Reject(m_gizmo.SpaceDefault.m_worldMatrixAdd.Forward, gravity);
+                }
+
+                if (!newForward.IsValid() || newForward.LengthSquared() <= double.Epsilon)
+                {
+                    newForward = Vector3D.CalculatePerpendicularVector(gravity);
+                }
+
+                newForward.Normalize();
+                m_gizmo.SpaceDefault.m_worldMatrixAdd = Matrix.CreateWorld(oldTransform.Translation, newForward, -gravity);
+
             }
-            else
-            {
-                MyHud.Notifications.Remove(m_stationRotationNotification);
-            }
+
         }
 
-        private void HideStationRotationNotification()
+        public virtual bool HandleGameInput()
         {
-            if (m_stationRotationNotification != null)
-            {
-                MyHud.Notifications.Remove(m_stationRotationNotification);
-            }
-        }
+            if (!IsActivated)  // do not consume input when not active
+                return false;
 
-		public void DisableStationRotation()
-		{
-			m_shipCreationClipboard.EnableStationRotation = false;
-			m_clipboard.EnableStationRotation = false;
-			m_floatingObjectClipboard.EnableStationRotation = false;
-			HideStationRotationNotification();
-		}
-
-        public void EnableStationRotation()
-        {
-            m_shipCreationClipboard.EnableStationRotation = !m_shipCreationClipboard.EnableStationRotation;
-            m_clipboard.EnableStationRotation = !m_clipboard.EnableStationRotation;
-            m_floatingObjectClipboard.EnableStationRotation = !m_floatingObjectClipboard.EnableStationRotation;
-			bool isStatic = true;
-			if(m_shipCreationClipboard.IsActive)
-				foreach(var grid in m_shipCreationClipboard.CopiedGrids)
-					isStatic &= grid.IsStatic;
-			if(m_clipboard.IsActive)
-				foreach(var grid in m_clipboard.CopiedGrids)
-					isStatic &= grid.IsStatic;
-			if (m_floatingObjectClipboard.IsActive)
-				isStatic = false;
-
-			if(isStatic)
-				ShowStationRotationNotification();
-        }
-
-        public bool HandleGameInput()
-        {
-            m_rotationHintRotating = false;
             int frameDt = MySandboxGame.TotalGamePlayTimeInMilliseconds - m_lastInputHandleTime;
             m_lastInputHandleTime += frameDt;
 
-            bool disallowCockpitBuilding = MySession.ControlledEntity is MyCockpit && !SpectatorIsBuilding;
+            bool disallowCockpitBuilding = MySession.Static.ControlledEntity is MyCockpit && !SpectatorIsBuilding;
+            if (disallowCockpitBuilding && MySession.Static.ControlledEntity is MyCockpit && (MySession.Static.ControlledEntity as MyCockpit).BuildingMode) disallowCockpitBuilding = false;
 
             // Don't allow cube builder when paused or when in cockpit and not in developer spectator mode
             if (MySandboxGame.IsPaused || disallowCockpitBuilding)
                 return false;
+
+            if (MyInput.Static.IsNewLeftMousePressed() && MySession.Static.ControlledEntity is MyCockpit && (MySession.Static.ControlledEntity as MyCockpit).BuildingMode && MySession.Static.SurvivalMode)
+                MySession.Static.LocalCharacter.BeginShoot(MyShootActionEnum.PrimaryAction);
+
+            if (this.HandleDevInput())
+                return true;
+
+            if (this.HandleExportInput())
+                return true;
+
+            var context = (IsActivated && MySession.Static.ControlledEntity is MyCharacter) ? MySession.Static.ControlledEntity.ControlContext : MyStringId.NullOrEmpty;
+
+            if (IsActivated && MyControllerHelper.IsControl(context, MyControlsSpace.BUILD_MODE))
+            {
+                IsBuildMode = !IsBuildMode;
+            }
+
+            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.FREE_ROTATION)) //TODO: do something with it
+            {
+                this.AlignToGravity();
+            }
+
+            if (this.HandleAdminAndCreativeInput(context))
+                return true;
+
+            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.LANDING_GEAR) && MySession.Static.LocalHumanPlayer != null && MySession.Static.LocalHumanPlayer.Identity.Character == MySession.Static.ControlledEntity)
+            {
+                if (!MyInput.Static.IsAnyShiftKeyPressed() && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
+                {
+                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+                    MyGuiSandbox.AddScreen(MyGuiScreenGamePlay.ActiveGameplayScreen = new MyGuiScreenColorPicker());
+                }
+            }
+
+            // Color Picker
+            if (CurrentGrid != null && MyInput.Static.IsNewGameControlPressed(MyControlsSpace.LANDING_GEAR))
+            {
+                if (MyInput.Static.IsAnyShiftKeyPressed())
+                {
+                    foreach (var gizmoSpace in m_gizmo.Spaces)
+                    {
+                        if (gizmoSpace.m_removeBlock != null && MySession.Static.LocalHumanPlayer != null)
+                            MySession.Static.LocalHumanPlayer.ChangeOrSwitchToColor(gizmoSpace.m_removeBlock.ColorMaskHSV);
+                    }
+                }
+            }
+
+            if (CurrentGrid != null && MyControllerHelper.IsControl(context, MyControlsSpace.CUBE_COLOR_CHANGE, MyControlStateType.PRESSED))
+            {
+                int expand = MyInput.Static.IsAnyCtrlKeyPressed() ? 1 : 0;
+                expand = MyInput.Static.IsAnyShiftKeyPressed() ? 3 : expand;
+                Change(expand);
+            }
+
+            if (this.HandleRotationInput(context, frameDt))
+                return true;
+
+			var humanPlayer = MySession.Static.LocalHumanPlayer;
+            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SWITCH_LEFT))
+            {
+				if (IsActivated && (CurrentBlockDefinition == null || MyFakes.ENABLE_BLOCK_COLORING) && humanPlayer != null)
+                {
+                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+					if (humanPlayer.SelectedBuildColorSlot - 1 < 0)
+						humanPlayer.SelectedBuildColorSlot = humanPlayer.BuildColorSlots.Count-1;
+					else
+						humanPlayer.SelectedBuildColorSlot -= 1;
+                }
+            }
+            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SWITCH_RIGHT))
+            {
+				if (IsActivated && (CurrentBlockDefinition == null || MyFakes.ENABLE_BLOCK_COLORING) && humanPlayer != null)
+                {
+                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
+					if (humanPlayer.SelectedBuildColorSlot + 1 >= humanPlayer.BuildColorSlots.Count)
+						humanPlayer.SelectedBuildColorSlot = 0;
+					else
+						humanPlayer.SelectedBuildColorSlot += 1;
+                }
+            }
+
+            if (this.HandleBlockVariantsInput(context))
+                return true;
+
+            return false;
+        }
+
+        private bool HandleBlockVariantsInput(MyStringId context)
+        {
+            if (MyFakes.ENABLE_BLOCK_STAGES && CurrentBlockDefinition != null && m_cubeBuildlerState.CurrentBlockDefinitionStages.Count > 0)
+            {
+                bool? switchForward = null;
+
+                int currentScrollWheelVal = MyInput.Static.MouseScrollWheelValue();
+
+                if (!MyInput.Static.IsGameControlPressed(MyControlsSpace.LOOKAROUND) && !MyInput.Static.IsAnyCtrlKeyPressed() && !MyInput.Static.IsAnyShiftKeyPressed()
+                    && currentScrollWheelVal != 0)
+                {
+
+                    if (MyInput.Static.PreviousMouseScrollWheelValue() < MyInput.Static.MouseScrollWheelValue()
+                        || MyControllerHelper.IsControl(context, MyControlsSpace.NEXT_BLOCK_STAGE, MyControlStateType.NEW_PRESSED))
+                    {
+                        switchForward = true;
+                    }
+                    else if (MyInput.Static.PreviousMouseScrollWheelValue() > MyInput.Static.MouseScrollWheelValue()
+                        || MyControllerHelper.IsControl(context, MyControlsSpace.PREV_BLOCK_STAGE, MyControlStateType.NEW_PRESSED))
+                    {
+                        switchForward = false;
+                    }
+                }
+
+                //if (switchForward == null && MyInput.Static.IsNewGameControlPressed(ME_SWITCH_STAGES))
+                //{
+                //    switchForward = true;
+                //    if (MyInput.Static.IsAnyShiftKeyPressed())
+                //        switchForward = false;
+                //}
+
+                if (switchForward.HasValue)
+                {
+                    int currDefinitionIndex = m_cubeBuildlerState.CurrentBlockDefinitionStages.IndexOf(CurrentBlockDefinition);
+                    int nextIndex;
+
+                    int increment = switchForward.Value ? 1 : -1;
+                    nextIndex = currDefinitionIndex;
+                    while ((nextIndex = nextIndex + increment) != currDefinitionIndex)
+                    {
+                        if (nextIndex >= m_cubeBuildlerState.CurrentBlockDefinitionStages.Count)
+                            nextIndex = 0;
+                        else if (nextIndex < 0)
+                            nextIndex = m_cubeBuildlerState.CurrentBlockDefinitionStages.Count - 1;
+
+                        if (!MySession.Static.SurvivalMode || (m_cubeBuildlerState.CurrentBlockDefinitionStages[nextIndex].AvailableInSurvival && (MyFakes.ENABLE_MULTIBLOCK_CONSTRUCTION || m_cubeBuildlerState.CurrentBlockDefinitionStages[nextIndex].MultiBlock == null)))
+                            break;
+                    }
+
+                    UpdateCubeBlockStageDefinition(m_cubeBuildlerState.CurrentBlockDefinitionStages[nextIndex]);
+                }
+            }
+
+            if (IsCubeSizeModesAvailable && MyInput.Static.IsGameControlReleased(MyControlsSpace.CUBE_BUILDER_CUBESIZE_MODE))
+            {
+
+                MyCubeSize newCubeSize = m_cubeBuildlerState.CubeSizeMode == MyCubeSize.Large ? MyCubeSize.Small : MyCubeSize.Large;
+                m_cubeBuildlerState.SetCubeSize(newCubeSize);
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool HandleRotationInput(MyStringId context, int frameDt)
+        {
+            if (IsActivated)
+            {
+                bool defaultMountPoint = MyControllerHelper.IsControl(context, MyControlsSpace.CUBE_DEFAULT_MOUNTPOINT);
+                if (defaultMountPoint)
+                {
+                    m_lastDefault++;
+                    m_alignToDefault = true;
+                }
+                for (int i = 0; i < 6; ++i)
+                {
+                    bool standardRotation = MyControllerHelper.IsControl(context, m_rotationControls[i], MyControlStateType.PRESSED);
+                    if (standardRotation)
+                    {
+                        bool newStandardPress = MyControllerHelper.IsControl(context, m_rotationControls[i], MyControlStateType.NEW_PRESSED);
+                        bool newPress = newStandardPress;
+
+                        int axis = -1;
+                        int direction = m_rotationDirections[i];
+
+                        if (MyFakes.ENABLE_STANDARD_AXES_ROTATION)
+                        {
+                            axis = GetStandardRotationAxisAndDirection(i, ref direction);
+                        }
+                        else
+                        {
+                            if (i < 2)
+                            {
+                                axis = m_rotationHints.RotationUpAxis;
+                                direction *= m_rotationHints.RotationUpDirection;
+                            }
+                            if (i >= 2 && i < 4)
+                            {
+                                axis = m_rotationHints.RotationRightAxis;
+                                direction *= m_rotationHints.RotationRightDirection;
+                            }
+                            if (i >= 4)
+                            {
+                                axis = m_rotationHints.RotationForwardAxis;
+                                direction *= m_rotationHints.RotationForwardDirection;
+                            }
+                        }
+
+                        if (axis != -1)
+                        {
+
+                            if (CurrentBlockDefinition != null && CurrentBlockDefinition.Rotation == MyBlockRotation.None)
+                                return false;
+
+                            float angleDelta = frameDt * BLOCK_ROTATION_SPEED;
+
+                            if (MyInput.Static.IsAnyCtrlKeyPressed())
+                            {
+                                if (!newPress)
+                                    return false;
+                                angleDelta = MathHelper.PiOver2;
+                            }
+                            if (MyInput.Static.IsAnyAltKeyPressed())
+                            {
+                                if (!newPress)
+                                    return false;
+                                angleDelta = MathHelper.ToRadians(1);
+                            }
+
+                            RotateAxis(axis, direction, angleDelta, newPress);
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private bool HandleDevInput()
+        {
+            //TODO: this code is for debug purposes. Need to remove before merge
+            //if(MyInput.Static.IsNewKeyPressed(MyKeys.OemBackslash))
+            //{
+            //    m_gizmo.SpaceDefault.m_worldMatrixAdd = MatrixD.CreateWorld(m_gizmo.SpaceDefault.m_worldMatrixAdd.Translation, Vector3.Forward, Vector3.Up);
+            //}
 
             //batch convert should be active in any game mode
             if (MyInput.Static.ENABLE_DEVELOPER_KEYS && MyInput.Static.IsNewKeyPressed(MyKeys.R) && MyInput.Static.IsAnyCtrlKeyPressed() && !MyInput.Static.IsAnyShiftKeyPressed() && !MyInput.Static.IsAnyMousePressed())
@@ -1084,6 +1194,13 @@ namespace Sandbox.Game.Entities
                 MyCubeGrid.PlacePrefabsToWorld();
                 return true;
             }
+
+            return false;
+        }
+
+        private bool HandleExportInput()
+        {
+
             if (MyInput.Static.IsNewKeyPressed(MyKeys.E) && MyInput.Static.IsAnyAltKeyPressed() && MyInput.Static.IsAnyCtrlKeyPressed() && !MyInput.Static.IsAnyShiftKeyPressed() && !MyInput.Static.IsAnyMousePressed() && MyPerGameSettings.EnableObjectExport)
             {
                 MyGuiAudio.PlaySound(MyGuiSounds.HudMouseClick);
@@ -1095,289 +1212,98 @@ namespace Sandbox.Game.Entities
                 return true;
             }
 
-            if (MyInput.Static.IsNewGameControlPressed(ME_SI_VIEW))
-            {
-                MyCubeGrid.ShowStructuralIntegrity = !MyCubeGrid.ShowStructuralIntegrity;
+            return false;
             }
 
-            var context = (IsActivated && MySession.ControlledEntity is MyCharacter) ? MySession.ControlledEntity.ControlContext : MyStringId.NullOrEmpty;
-
-            if (IsActivated && MyControllerHelper.IsControl(context, MyControlsSpace.BUILD_MODE))
+        private bool HandleAdminAndCreativeInput(MyStringId context)
             {
-                IsBuildMode = !IsBuildMode;
-            }
-
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.STATION_ROTATION) && (ShipCreationIsActivated || CopyPasteIsActivated))
-            {
-                EnableStationRotation();
-            }
+            bool isAdminOrCreative = (MySession.Static.IsAdminModeEnabled(Sync.MyId) && MySession.Static.IsAdmin) || MySession.Static.CreativeMode;
 
             // When spectator active, building is instant
-            if (MySession.Static.CreativeMode || SpectatorIsBuilding)
+            if (isAdminOrCreative || (SpectatorIsBuilding && MyFinalBuildConstants.IS_OFFICIAL == false))
             {
-                if (MySession.Static.EnableCopyPaste)
+                if (!(MySession.Static.ControlledEntity is MyShipController))
                 {
-                    if (MyInput.Static.IsNewKeyPressed(MyKeys.C) && MyInput.Static.IsAnyCtrlKeyPressed() && !MyInput.Static.IsAnyMousePressed())
-                    {
-                        if (MySession.Static.CameraController is MyCharacter || MySession.GetCameraControllerEnum() == MyCameraControllerEnum.Spectator)
-                        {
-                            MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-
-                            var entity = MyCubeGrid.GetTargetEntity();
-                            if (m_clipboard.IsActive == false && entity is MyCubeGrid)
-                            {
-                                MyCubeGrid grid = entity as MyCubeGrid;
-                                MySessionComponentVoxelHand.Static.Enabled = false;
-                                DeactivateMultiBlockClipboard();
-                                DeactivateCopyPasteFloatingObject(true);
-                                
-                                if (!MyInput.Static.IsAnyShiftKeyPressed())
-                                    m_clipboard.CopyGroup(grid);
-                                else
-                                    m_clipboard.CopyGrid(grid);
-                                UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                            }
-                            else if (!m_floatingObjectClipboard.IsActive && entity is MyFloatingObject)
-                            {
-                                MySessionComponentVoxelHand.Static.Enabled = false;
-                                DeactivateMultiBlockClipboard();
-                                DeactivateCopyPaste(true);
-
-                                m_floatingObjectClipboard.CopyfloatingObject(entity as MyFloatingObject);
-                                UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                            }
-
-                            return true;
-                        }
-                    }
-
-                    if (MyInput.Static.IsNewKeyPressed(MyKeys.X) && MyInput.Static.IsAnyCtrlKeyPressed())
-                    {
-                        MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-
-                        MyEntity entity = MyCubeGrid.GetTargetEntity();
-
-                        if (entity == null)
-                        {
-                            return true;
-                        }
-                        else if (entity is MyCubeGrid && m_clipboard.IsActive == false)
-                        {
-                            bool cutGroup = !MyInput.Static.IsAnyShiftKeyPressed();
-
-                            if (MyFakes.CLIPBOARD_CUT_CONFIRMATION)
-                            {
-                                MyEntities.EnableEntityBoundingBoxDraw(entity, true);
-
-                                MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-                                buttonType: MyMessageBoxButtonsType.YES_NO,
-                                messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextAreYouSureToMoveGridToClipboard),
-                                messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionPleaseConfirm),
-                                callback: (v) =>
-                                {
-                                    if (v == MyGuiScreenMessageBox.ResultEnum.YES)
-                                        OnCutConfirm(entity as MyCubeGrid, cutGroup);
-
-                                    MyEntities.EnableEntityBoundingBoxDraw(entity, false);
-                                }));
-                            }
-                            else
-                                OnCutConfirm(entity as MyCubeGrid, cutGroup);
-
-                        }
-                        else if (entity is MyVoxelMap && m_voxelClipboard.IsActive == false &&
-                            MyPerGameSettings.GUI.VoxelMapEditingScreen == typeof(MyGuiScreenDebugSpawnMenu) // hack to disable this in ME
-                            )
-                        {
-                            if (MyFakes.CLIPBOARD_CUT_CONFIRMATION)
-                            {
-                                MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-                                    buttonType: MyMessageBoxButtonsType.YES_NO,
-                                    messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextAreYouSureToRemoveAsteroid),
-                                    messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionPleaseConfirm),
-                                    callback: (v) =>
-                                    {
-                                        if (v == MyGuiScreenMessageBox.ResultEnum.YES)
-                                            OnCutAsteroidConfirm(entity as MyVoxelMap);
-                                        MyEntities.EnableEntityBoundingBoxDraw(entity, false);
-                                    }));
-                            }
-                            else
-                                OnCutAsteroidConfirm(entity as MyVoxelMap);
-                        }
-                        else if (entity is MyFloatingObject && !m_floatingObjectClipboard.IsActive)
-                        {
-                            if (MyFakes.CLIPBOARD_CUT_CONFIRMATION)
-                            {
-                                MyEntities.EnableEntityBoundingBoxDraw(entity, true);
-
-                                MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-                                buttonType: MyMessageBoxButtonsType.YES_NO,
-                                messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextAreYouSureToMoveGridToClipboard),
-                                messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionPleaseConfirm),
-                                callback: (v) =>
-                                {
-                                    if (v == MyGuiScreenMessageBox.ResultEnum.YES)
-                                        OnCutFloatingObjectConfirm(entity as MyFloatingObject);
-
-                                    MyEntities.EnableEntityBoundingBoxDraw(entity, false);
-                                }));
-                            }
-                            else
-                                OnCutFloatingObjectConfirm(entity as MyFloatingObject);
-                        }
-                        return true;
-                    }
-
-                    if (MyInput.Static.IsNewKeyPressed(MyKeys.V) && MyInput.Static.IsAnyCtrlKeyPressed() && !MyInput.Static.IsAnyShiftKeyPressed())
-                    {
-                        DeactivateBlockCreation();
-                        ShowStationRotationNotification();
-                        if (m_clipboard.PasteGrid())
-                        {
-                            MySessionComponentVoxelHand.Static.Enabled = false;
-                            UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                            return true;
-                        }
-                        else if (m_floatingObjectClipboard.PasteFloatingObject())
-                        {
-                            MySessionComponentVoxelHand.Static.Enabled = false;
-                            UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                            return true;
-                        }
-                    }
 
                     if (HandleBlockCreationMovement(context))
                         return true;
                 }
 
-                if (MyInput.Static.IsAnyCtrlKeyPressed() && m_shipCreationClipboard.IsActive)
+                if (DynamicMode)
                 {
-                    if (MyInput.Static.PreviousMouseScrollWheelValue() < MyInput.Static.MouseScrollWheelValue())
+                        //GR: Go here when not in creative. When in survival and Admin menu is enabled will have duplicates of the same cubeblock (on the server)!
+                        if (!MySession.Static.SurvivalMode && MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_TOOL_ACTION))
                     {
-                        m_shipCreationClipboard.MoveEntityFurther();
-                        return true;
+                        Add();
                     }
-                    else if (MyInput.Static.PreviousMouseScrollWheelValue() > MyInput.Static.MouseScrollWheelValue())
-                    {
-                        m_shipCreationClipboard.MoveEntityCloser();
-                        return true;
-                    }
+                    
                 }
-
-                if (MyInput.Static.IsNewKeyPressed(MyKeys.Escape))
+                else if (CurrentGrid != null)
                 {
-                    if (m_clipboard.IsActive)
-                    {
-						DisableStationRotation();
-                        m_clipboard.Deactivate();
-                        UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                        return true;
-                    }
-
-                    if (m_floatingObjectClipboard.IsActive)
-                    {
-						DisableStationRotation();
-                        m_floatingObjectClipboard.Deactivate();
-                        UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                        return true;
-                    }
-
-                    if (m_voxelClipboard.IsActive)
-                    {
-                        m_voxelClipboard.Deactivate();
-                        UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                        return true;
-                    }
-
-                    if (m_shipCreationClipboard.IsActive)
-                    {
-						DisableStationRotation();
-                        m_shipCreationClipboard.Deactivate();
-                        UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                        return true;
-                    }
-
-                    //if (m_multiBlockCreationClipboard.IsActive)
+                    this.HandleCurrentGridInput(context);
+                }
+                //if (CurrentGrid != null)
+                //{
+                //    this.HandleCurrentGridInput(context);
+                //}
+                //else if (DynamicMode)
+                //{
+                //    if (MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_TOOL_ACTION))
+                //    {
+                //        Add();
+                //    }
+                //}
+                else
+                {
+                    //RKTODO - creation of blocks in line or plane will be done when server function will be prepared 
+                    // (need to create grid with one block - the first target and then build all other blocks in the grid)
+                    //if (MyInput.Static.IsNewKeyPressed(Keys.Escape))
                     //{
-                    //    m_multiBlockCreationClipboard.Deactivate();
-                    //    UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                    //    return true;
+                    //    if (m_gizmo.SpaceDefault.m_continueBuild != null)
+                    //    {
+                    //        m_gizmo.SpaceDefault.m_startBuild = null;
+                    //        m_gizmo.SpaceDefault.m_startRemove = null;
+                    //        m_gizmo.SpaceDefault.m_continueBuild = null;
+                    //        return true;
+                    //    }
+                    //}
+
+                    if (MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_TOOL_ACTION))
+                    {
+                        //if (MyInput.Static.IsAnyCtrlKeyPressed() || BuildingMode != BuildingModeEnum.SingleBlock) //TODO: do something with it
+                        //{
+                        //    StartBuilding();
+                        //}
+                        //else
+                        //{
+                        Add();
+                        //}
+                    }
+
+                    //if (MyInput.Static.IsLeftMousePressed() ||
+                    //    MyInput.Static.IsRightMousePressed())
+                    //{
+                    //    ContinueBuilding(MyInput.Static.IsAnyShiftKeyPressed() || BuildingMode == BuildingModeEnum.Plane);
+                    //}
+
+                    //if (MyInput.Static.IsNewLeftMouseReleased() ||
+                    //    MyInput.Static.IsNewRightMouseReleased())
+                    //{
+                    //    StopBuilding();
                     //}
                 }
+            }
 
-                if (MyInput.Static.IsNewGameControlPressed(ME_PICK_BLOCK) && !MyInput.Static.IsAnyCtrlKeyPressed())
-                {
-                    LineD line = new LineD(MySector.MainCamera.Position, MySector.MainCamera.Position + MySector.MainCamera.ForwardVector * 100);
-                    MyCubeGrid grid = m_currentGrid;
-                    Vector3D hitPos;
-                    if (grid != null || MyCubeGrid.TryRayCastGrid(ref line, out grid, out hitPos))
-                    {
-                        var result = grid.RayCastBlocks(MySector.MainCamera.Position, MySector.MainCamera.Position + MySector.MainCamera.ForwardVector * 100);
-                        if (result.HasValue)
-                        {
-                            var slot = MyToolbarComponent.CurrentToolbar.SelectedSlot;
-                            SelectBlockToToolbar(grid.GetCubeBlock(result.Value), slot.HasValue ? false : true);
-                            if (slot.HasValue)
-                                MyToolbarComponent.CurrentToolbar.ActivateItemAtSlot(slot.Value);
-                        }
-                    }
-                }
+            return false;
+        }
 
-                if (MyInput.Static.IsNewLeftMousePressed() || MyControllerHelper.IsControl(context, MyControlsSpace.COPY_PASTE_ACTION))
-                {
-                    if (m_clipboard.IsActive)
-                    {
-                        if (m_clipboard.PasteGrid())
-                        {
-                            DisableStationRotation();
-                            UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                            return true;
-                        }
-                    }
-
-                    if (m_floatingObjectClipboard.IsActive)
-                    {
-                        if (m_floatingObjectClipboard.PasteFloatingObject())
-                        {
-							DisableStationRotation();
-                            UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                            return true;
-                        }
-                    }
-
-                    if (m_voxelClipboard.IsActive)
-                    {
-                        if (m_voxelClipboard.PasteVoxelMap())
-                        {
-                            UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                            return true;
-                        }
-                    }
-
-                    if (m_shipCreationClipboard.IsActive)
-                    {
-                        if (m_shipCreationClipboard.PasteGrid())
-                        {
-							DisableStationRotation();
-                            return true;
-                        }
-                    }
-
-                    if (m_multiBlockCreationClipboard.IsActive)
-                    {
-                        if (m_multiBlockCreationClipboard.PasteGrid(deactivate: false))
-                            MyGuiAudio.PlaySound(MyGuiSounds.HudPlaceBlock);
-
-                        return true;
-                    }
-
-                }
-
-                if (CurrentGrid != null)
-                {
-
-                    if (MyControllerHelper.IsControl(context, MyControlsSpace.SYMMETRY_SWITCH, MyControlStateType.NEW_PRESSED))
+        /// <summary>
+        /// Handles input related when current grid being targeted.
+        /// </summary>
+        /// <returns></returns>
+        private bool HandleCurrentGridInput(MyStringId context)
+        {
+                    if (MyControllerHelper.IsControl(context, MyControlsSpace.SYMMETRY_SWITCH, MyControlStateType.NEW_PRESSED) && !(MySession.Static.ControlledEntity is MyShipController))
                     {
                         if (BlockCreationIsActivated)
                             MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
@@ -1386,27 +1312,27 @@ namespace Sandbox.Game.Entities
                         {
                             case MySymmetrySettingModeEnum.NoPlane:
                                 m_symmetrySettingMode = MySymmetrySettingModeEnum.XPlane;
-                                UpdateSymmetryNotification(MySpaceTexts.SettingSymmetryX);
+                                UpdateSymmetryNotification(MyCommonTexts.SettingSymmetryX);
                                 break;
                             case MySymmetrySettingModeEnum.XPlane:
                                 m_symmetrySettingMode = MySymmetrySettingModeEnum.XPlaneOdd;
-                                UpdateSymmetryNotification(MySpaceTexts.SettingSymmetryXOffset);
+                                UpdateSymmetryNotification(MyCommonTexts.SettingSymmetryXOffset);
                                 break;
                             case MySymmetrySettingModeEnum.XPlaneOdd:
                                 m_symmetrySettingMode = MySymmetrySettingModeEnum.YPlane;
-                                UpdateSymmetryNotification(MySpaceTexts.SettingSymmetryY);
+                                UpdateSymmetryNotification(MyCommonTexts.SettingSymmetryY);
                                 break;
                             case MySymmetrySettingModeEnum.YPlane:
                                 m_symmetrySettingMode = MySymmetrySettingModeEnum.YPlaneOdd;
-                                UpdateSymmetryNotification(MySpaceTexts.SettingSymmetryYOffset);
+                                UpdateSymmetryNotification(MyCommonTexts.SettingSymmetryYOffset);
                                 break;
                             case MySymmetrySettingModeEnum.YPlaneOdd:
                                 m_symmetrySettingMode = MySymmetrySettingModeEnum.ZPlane;
-                                UpdateSymmetryNotification(MySpaceTexts.SettingSymmetryZ);
+                                UpdateSymmetryNotification(MyCommonTexts.SettingSymmetryZ);
                                 break;
                             case MySymmetrySettingModeEnum.ZPlane:
                                 m_symmetrySettingMode = MySymmetrySettingModeEnum.ZPlaneOdd;
-                                UpdateSymmetryNotification(MySpaceTexts.SettingSymmetryZOffset);
+                                UpdateSymmetryNotification(MyCommonTexts.SettingSymmetryZOffset);
                                 break;
                             case MySymmetrySettingModeEnum.ZPlaneOdd:
                                 m_symmetrySettingMode = MySymmetrySettingModeEnum.NoPlane;
@@ -1415,7 +1341,7 @@ namespace Sandbox.Game.Entities
                         }
                     }
 
-                    if (MyControllerHelper.IsControl(context, MyControlsSpace.USE_SYMMETRY, MyControlStateType.NEW_PRESSED))
+                    if (MyControllerHelper.IsControl(context, MyControlsSpace.USE_SYMMETRY, MyControlStateType.NEW_PRESSED) && !(MySession.Static.ControlledEntity is MyShipController))
                     {
                         MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
 
@@ -1436,7 +1362,7 @@ namespace Sandbox.Game.Entities
                         RemoveSymmetryNotification();
                     }
 
-                    if (IsInSymmetrySettingMode)
+                    if (IsInSymmetrySettingMode && !(MySession.Static.ControlledEntity is MyShipController))
                     {
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_TOOL_ACTION, MyControlStateType.NEW_PRESSED))
                         {
@@ -1478,7 +1404,7 @@ namespace Sandbox.Game.Entities
                             }
 
                             return true;
-                        } //if (input.IsNewLeftMousePressed())
+                }
 
                         if (MyControllerHelper.IsControl(context, MyControlsSpace.SECONDARY_TOOL_ACTION, MyControlStateType.NEW_PRESSED))
                         {
@@ -1508,7 +1434,7 @@ namespace Sandbox.Game.Entities
 
                             return false;
                         }
-                    } //if (IsInSymmetrySettingMode)
+            }
 
 
                     if (MyInput.Static.IsNewKeyPressed(MyKeys.Escape))
@@ -1520,7 +1446,7 @@ namespace Sandbox.Game.Entities
                             return true;
                         }
 
-                        if (CancelBuilding()) 
+                if (CancelBuilding())
                             return true;
                     }
 
@@ -1555,6 +1481,7 @@ namespace Sandbox.Game.Entities
                                 }
                             }
 
+                    PrepareBlocksToRemove();
                             Remove();
                         }
                     }
@@ -1571,307 +1498,7 @@ namespace Sandbox.Game.Entities
                         MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_BUILD_ACTION, MyControlStateType.NEW_RELEASED))
                     {
                         StopBuilding();
-                    }               
-                } //if (CurrentGrid != null)
-                else if (CurrentVoxelMap != null)
-                {
-                    //RKTODO - creation of blocks in line or plane will be done when server function will be prepared 
-                    // (need to create grid with one block - the first target and then build all other blocks in the grid)
-                    //if (MyInput.Static.IsNewKeyPressed(Keys.Escape))
-                    //{
-                    //    if (m_gizmo.SpaceDefault.m_continueBuild != null)
-                    //    {
-                    //        m_gizmo.SpaceDefault.m_startBuild = null;
-                    //        m_gizmo.SpaceDefault.m_startRemove = null;
-                    //        m_gizmo.SpaceDefault.m_continueBuild = null;
-                    //        return true;
-                    //    }
-                    //}
-
-                    if (MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_TOOL_ACTION))
-                    {
-                        //if (MyInput.Static.IsAnyCtrlKeyPressed() || BuildingMode != BuildingModeEnum.SingleBlock)
-                        //{
-                        //    StartBuilding();
-                        //}
-                        //else
-                        {
-                            Add();
-                        }
-                    }
-
-                    //if (MyInput.Static.IsLeftMousePressed() ||
-                    //    MyInput.Static.IsRightMousePressed())
-                    //{
-                    //    ContinueBuilding(MyInput.Static.IsAnyShiftKeyPressed() || BuildingMode == BuildingModeEnum.Plane);
-                    //}
-
-                    //if (MyInput.Static.IsNewLeftMouseReleased() ||
-                    //    MyInput.Static.IsNewRightMouseReleased())
-                    //{
-                    //    StopBuilding();
-                    //}
-                } //if (CurrentVoxelMap != null)
-                else if (DynamicMode)
-                {
-                    if (MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_TOOL_ACTION))
-                    {
-                        Add();
-                    }
-                } // if (DynamicMode)
-            }
-            else if (MySession.Static.SimpleSurvival)
-            {
-                if (DynamicMode && HandleBlockCreationMovement(context))
-                    return true;
-
-                if (MyControllerHelper.IsControl(MySpaceBindingCreator.CX_CHARACTER, MyControlsSpace.SECONDARY_TOOL_ACTION))
-                {
-                    if (MyFakes.ENABLE_COMPOUND_BLOCKS && !CompoundEnabled)
-                    {
-                        foreach (var gizmoSpace in m_gizmo.Spaces)
-                        {
-                            if (!gizmoSpace.Enabled)
-                                continue;
-
-                            gizmoSpace.m_blockIdInCompound = null;
-                        }
-                    }
-
-                    Remove();
                 }
-            }
-            else if (MyFakes.ENABLE_BATTLE_SYSTEM && MySession.Static.Battle) 
-            {
-                if (MyControllerHelper.IsControl(context, MyControlsSpace.PRIMARY_TOOL_ACTION))
-                {
-                    if (m_clipboard.IsActive)
-                    {
-                        if (m_clipboard.PasteGrid())
-                        {
-                            UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            if (MyControllerHelper.IsControl(context, MyControlsSpace.SWITCH_COMPOUND, MyControlStateType.NEW_PRESSED))
-                CompoundEnabled = !CompoundEnabled;
-
-            if (MyInput.Static.IsNewGameControlPressed(ME_PRESS_TO_COMPOUND))
-                CompoundEnabled = true;
-
-            if (MyInput.Static.IsNewGameControlReleased(ME_PRESS_TO_COMPOUND))
-                CompoundEnabled = false;
-
-            if (MyInput.Static.IsNewKeyPressed(MyKeys.B) && MyInput.Static.IsAnyCtrlKeyPressed() && !MyInput.Static.IsAnyMousePressed())
-            {
-                MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-
-                if (!m_clipboard.IsActive && !MySession.Static.Battle)
-                {
-                    MySessionComponentVoxelHand.Static.Enabled = false;
-                    var copiedGrid = MyCubeGrid.GetTargetGrid();
-                    if (!MyInput.Static.IsAnyShiftKeyPressed())
-                        m_clipboard.CopyGroup(copiedGrid);
-                    else
-                        m_clipboard.CopyGrid(copiedGrid);
-
-                    UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-
-                    var blueprintScreen = new MyGuiBlueprintScreen(m_clipboard);
-                    if (copiedGrid != null)
-                    {
-                        blueprintScreen.CreateFromClipboard(true);
-                    }
-                    m_clipboard.Deactivate();
-                    MyGuiSandbox.AddScreen(blueprintScreen);
-                }
-                return true;
-            }
-
-            if (MyInput.Static.IsNewKeyPressed(MyKeys.Escape))
-            {
-                if (m_shipCreationClipboard.IsActive)
-                {
-                    /*m_shipCreationClipboard.Deactivate();*/
-                    Deactivate();
-                    return true;
-                }
-            }
-
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.LANDING_GEAR) && MySession.LocalHumanPlayer != null && MySession.LocalHumanPlayer.Identity.Character == MySession.ControlledEntity)
-            {
-                if (!MyInput.Static.IsAnyShiftKeyPressed() && MyGuiScreenGamePlay.ActiveGameplayScreen == null)
-                {
-                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-                    MyGuiSandbox.AddScreen(MyGuiScreenGamePlay.ActiveGameplayScreen = new MyGuiScreenColorPicker());
-                }
-            }
-
-            if (CurrentGrid != null && MyInput.Static.IsNewGameControlPressed(MyControlsSpace.LANDING_GEAR))
-            {
-                if (MyInput.Static.IsAnyShiftKeyPressed())
-                {
-                    foreach (var gizmoSpace in m_gizmo.Spaces)
-                    {
-                        if (gizmoSpace.m_removeBlock != null && MySession.LocalHumanPlayer != null)
-                            MySession.LocalHumanPlayer.ChangeOrSwitchToColor(gizmoSpace.m_removeBlock.ColorMaskHSV);
-                    }
-                }
-            }
-
-            if (CurrentGrid != null && MyControllerHelper.IsControl(context, MyControlsSpace.CUBE_COLOR_CHANGE, MyControlStateType.PRESSED))
-            {
-                int expand = MyInput.Static.IsAnyCtrlKeyPressed() ? 1 : 0;
-                expand = MyInput.Static.IsAnyShiftKeyPressed() ? 3 : expand;
-                Change(expand);
-            }
-
-            if (IsActivated)
-            {
-                for (int i = 0; i < 6; ++i)
-                {
-                    bool standardRotation = MyControllerHelper.IsControl(context, m_rotationControls[i], MyControlStateType.PRESSED);
-                    if (standardRotation)
-                    {
-                        bool newStandardPress = MyControllerHelper.IsControl(context, m_rotationControls[i], MyControlStateType.NEW_PRESSED);
-                        bool newPress = newStandardPress;
-
-                        int axis = -1;
-                        int direction = m_rotationDirections[i];
-
-                        if (MyFakes.ENABLE_STANDARD_AXES_ROTATION)
-                        {
-                            axis = GetStandardRotationAxisAndDirection(i, ref direction);
-                        }
-                        else
-                        {
-                            if (i < 2)
-                            {
-                                axis = m_rotationHints.RotationUpAxis;
-                                direction *= m_rotationHints.RotationUpDirection;
-                            }
-                            if (i >= 2 && i < 4)
-                            {
-                                axis = m_rotationHints.RotationRightAxis;
-                                direction *= m_rotationHints.RotationRightDirection;
-                            }
-                            if (i >= 4)
-                            {
-                                axis = m_rotationHints.RotationForwardAxis;
-                                direction *= m_rotationHints.RotationForwardDirection;
-                            }
-                        }
-
-                        if (axis != -1)
-                        {
-                            m_rotationHintRotating |= !newPress;
-                            RotateAxis(axis, direction, newPress, frameDt);
-                        }
-                    }
-                }
-            }
-
-			var humanPlayer = MySession.LocalHumanPlayer;
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SWITCH_LEFT))
-            {
-				if (IsActivated && (CurrentBlockDefinition == null || MyFakes.ENABLE_BLOCK_COLORING) && humanPlayer != null)
-                {
-                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-					if (humanPlayer.SelectedBuildColorSlot - 1 < 0)
-						humanPlayer.SelectedBuildColorSlot = humanPlayer.BuildColorSlots.Count-1;
-					else
-						humanPlayer.SelectedBuildColorSlot -= 1;
-                }
-            }
-            if (MyInput.Static.IsNewGameControlPressed(MyControlsSpace.SWITCH_RIGHT))
-            {
-				if (IsActivated && (CurrentBlockDefinition == null || MyFakes.ENABLE_BLOCK_COLORING) && humanPlayer != null)
-                {
-                    MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-					MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
-					if (humanPlayer.SelectedBuildColorSlot + 1 >= humanPlayer.BuildColorSlots.Count)
-						humanPlayer.SelectedBuildColorSlot = 0;
-					else
-						humanPlayer.SelectedBuildColorSlot += 1;
-                }
-            }
-
-            if (MyFakes.ENABLE_BLOCK_STAGES && CurrentBlockDefinition != null && CurrentBlockDefinitionStages.Count > 0)
-            {
-                bool? switchForward = null;
-
-                if (!MyInput.Static.IsGameControlPressed(MyControlsSpace.LOOKAROUND) && !MyInput.Static.IsAnyCtrlKeyPressed() && !MyInput.Static.IsAnyShiftKeyPressed())
-                {
-                    if (MyInput.Static.PreviousMouseScrollWheelValue() < MyInput.Static.MouseScrollWheelValue()
-                        || MyControllerHelper.IsControl(context, MyControlsSpace.NEXT_BLOCK_STAGE, MyControlStateType.NEW_PRESSED))
-                    {
-                        switchForward = true;
-                    }
-                    else if (MyInput.Static.PreviousMouseScrollWheelValue() > MyInput.Static.MouseScrollWheelValue()
-                        || MyControllerHelper.IsControl(context, MyControlsSpace.PREV_BLOCK_STAGE, MyControlStateType.NEW_PRESSED))
-                    {
-                        switchForward = false;
-                    }
-                }
-
-                //if (switchForward == null && MyInput.Static.IsNewGameControlPressed(ME_SWITCH_STAGES))
-                //{
-                //    switchForward = true;
-                //    if (MyInput.Static.IsAnyShiftKeyPressed())
-                //        switchForward = false;
-                //}
-
-                if (switchForward.HasValue)
-                {
-                    int currDefinitionIndex = CurrentBlockDefinitionStages.IndexOf(CurrentBlockDefinition);
-                    int nextIndex;
-
-					int increment = switchForward.Value ? 1 : -1;
-					nextIndex = currDefinitionIndex;
-					while ((nextIndex = nextIndex + increment) != currDefinitionIndex)
-					{
-						if (nextIndex >= CurrentBlockDefinitionStages.Count)
-							nextIndex = 0;
-						else if(nextIndex < 0)
-							nextIndex = CurrentBlockDefinitionStages.Count-1;
-						if(CurrentBlockDefinitionStages[nextIndex].AvailableInSurvival || !MySession.Static.SurvivalMode)
-							break;
-					}
-
-                    UpdateCubeBlockStageDefinition(CurrentBlockDefinitionStages[nextIndex]);
-                }
-            }
-
-            if (MyFakes.ENABLE_CUBE_BUILDER_DYNAMIC_MODE
-                && (CurrentBlockDefinition != null || (MyFakes.ENABLE_ADVANCED_CLIPBOARD && m_clipboard.IsActive))
-                &&  MyControllerHelper.IsControl(context, MyControlsSpace.SWITCH_BUILDING_MODE, MyControlStateType.NEW_PRESSED))
-            {
-                DynamicMode = !DynamicMode;
-
-                if (DynamicMode)
-                {
-                    if (MySession.Static.SurvivalMode && !SpectatorIsBuilding && CurrentBlockDefinition != null)
-                    {
-                        float gridSize = MyDefinitionManager.Static.GetCubeSize(CurrentBlockDefinition.CubeSize);
-                        float maxSize = MathHelper.Max(CurrentBlockDefinition.Size.X, CurrentBlockDefinition.Size.Y, CurrentBlockDefinition.Size.Z) * gridSize;
-                        IntersectionDistance = 1 + maxSize;
-                        m_multiBlockCreationClipboard.SetDragDistance(IntersectionDistance);
-                    }
-                }
-                else
-                {
-                    IntersectionDistance = DEFAULT_BLOCK_BUILDING_DISTANCE;
-                    m_multiBlockCreationClipboard.SetDragDistance(IntersectionDistance);
-                }
-
-                if (MyFakes.ENABLE_ADVANCED_CLIPBOARD)
-                {
-                    ((MyGridClipboardAdvanced)m_clipboard).DynamicModeChanged();
-                }
-            }
 
             return false;
         }
@@ -1882,96 +1509,36 @@ namespace Sandbox.Game.Entities
             if ((ctrl && MyInput.Static.PreviousMouseScrollWheelValue() < MyInput.Static.MouseScrollWheelValue())
                 || MyControllerHelper.IsControl(context, MyControlsSpace.MOVE_FURTHER, MyControlStateType.PRESSED))
             {
-                bool handled = false;
-                if (m_clipboard.IsActive)
-                {
-                    m_clipboard.MoveEntityFurther();
-                    handled = true;
-                }
-
-                if (m_floatingObjectClipboard.IsActive)
-                {
-                    m_floatingObjectClipboard.MoveEntityFurther();
-                    handled = true;
-                }
-
-                if (m_voxelClipboard.IsActive)
-                {
-                    m_voxelClipboard.MoveEntityFurther();
-                    handled = true;
-                }
-
-                if (m_multiBlockCreationClipboard.IsActive)
-                {
-                    m_multiBlockCreationClipboard.MoveEntityFurther();
-                    handled = true;
-                }
-
-                if (DynamicMode)
-                {
                     float previousIntersectionDistance = IntersectionDistance;
                     IntersectionDistance *= 1.1f;
-                    if (IntersectionDistance > MAX_BLOCK_BUILDING_DISTANCE)
-                        IntersectionDistance = MAX_BLOCK_BUILDING_DISTANCE;
+                    if (IntersectionDistance > CubeBuilderDefinition.MaxBlockBuildingDistance)
+                        IntersectionDistance = CubeBuilderDefinition.MaxBlockBuildingDistance;
 
                     if (MySession.Static.SurvivalMode && !SpectatorIsBuilding)
                     {
-                        float gridSize = MyDefinitionManager.Static.GetCubeSize(CurrentBlockDefinition.CubeSize);
-                        BoundingBoxD localAABB = new BoundingBoxD(-CurrentBlockDefinition.Size * gridSize * 0.5f, CurrentBlockDefinition.Size * gridSize * 0.5f);
-                        MatrixD gizmoMatrix = m_gizmo.SpaceDefault.m_worldMatrixAdd;
-                        gizmoMatrix.Translation = FreePlacementTarget;
-                        MatrixD inverseDrawMatrix = MatrixD.Invert(gizmoMatrix);
-                        if (!MyCubeBuilderGizmo.DefaultGizmoCloseEnough(ref inverseDrawMatrix, localAABB, gridSize, IntersectionDistance))
-                            IntersectionDistance = previousIntersectionDistance;
-
-                        m_multiBlockCreationClipboard.SetDragDistance(IntersectionDistance);
+                        if (CurrentBlockDefinition != null)
+                        {
+                            float gridSize = MyDefinitionManager.Static.GetCubeSize(CurrentBlockDefinition.CubeSize);
+                            BoundingBoxD localAABB = new BoundingBoxD(-CurrentBlockDefinition.Size * gridSize * 0.5f, CurrentBlockDefinition.Size * gridSize * 0.5f);
+                            MatrixD gizmoMatrix = m_gizmo.SpaceDefault.m_worldMatrixAdd;
+                            gizmoMatrix.Translation = FreePlacementTarget;
+                            MatrixD inverseDrawMatrix = MatrixD.Invert(gizmoMatrix);
+                            if (!MyCubeBuilderGizmo.DefaultGizmoCloseEnough(ref inverseDrawMatrix, localAABB, gridSize, IntersectionDistance))
+                                IntersectionDistance = previousIntersectionDistance;
+                        }
                     }
 
-                    handled = true;
+                return true;
                 }
-
-                return handled;
-            }
             else if ((ctrl && MyInput.Static.PreviousMouseScrollWheelValue() > MyInput.Static.MouseScrollWheelValue())
                 || MyControllerHelper.IsControl(context, MyControlsSpace.MOVE_CLOSER, MyControlStateType.PRESSED))
             {
-                bool handled = false;
-
-                if (m_clipboard.IsActive)
-                {
-                    m_clipboard.MoveEntityCloser();
-                    handled = true;
-                }
-
-                if (m_floatingObjectClipboard.IsActive)
-                {
-                    m_floatingObjectClipboard.MoveEntityCloser();
-                    handled = true;
-                }
-
-                if (m_voxelClipboard.IsActive)
-                {
-                    m_voxelClipboard.MoveEntityCloser();
-                    handled = true;
-                }
-
-                if (m_multiBlockCreationClipboard.IsActive)
-                {
-                    m_multiBlockCreationClipboard.MoveEntityCloser();
-                    handled = true;
-                }
-
-                if (DynamicMode)
-                {
                     IntersectionDistance /= 1.1f;
-                    if (IntersectionDistance < MIN_BLOCK_BUILDING_DISTANCE)
-                        IntersectionDistance = MIN_BLOCK_BUILDING_DISTANCE;
+                    if (IntersectionDistance < CubeBuilderDefinition.MinBlockBuildingDistance)
+                        IntersectionDistance = CubeBuilderDefinition.MinBlockBuildingDistance;            
 
-                    handled = true;
+                return true;
                 }
-
-                return handled;
-            }
 
             return false;
         }
@@ -1996,7 +1563,31 @@ namespace Sandbox.Game.Entities
                 return axes[index];
             }
 
-            if (index < 2)
+            var singleMountPointNormal = GetSingleMountPointNormal();
+            if (singleMountPointNormal != null)
+            {
+                var normal = singleMountPointNormal.Value;
+                int dotUp = Vector3I.Dot(ref normal, ref Vector3I.Up);
+                int dotRight = Vector3I.Dot(ref normal, ref Vector3I.Right);
+                int dotForward = Vector3I.Dot(ref normal, ref Vector3I.Forward);
+
+                if (dotUp == 1 || dotUp == -1)
+                {
+                    axis = 1;
+                    direction *= dotUp;
+                }
+                else if (dotRight == 1 || dotRight == -1)
+                {
+                    axis = 0;
+                    direction *= dotRight;
+                }
+                else if (dotForward == 1 || dotForward == -1)
+                {
+                    axis = 2;
+                    direction *= dotForward;
+                }
+            }
+            else if (index < 2)
             {
                 // Vertical axis
                 int dotUp = Vector3I.Dot(ref upAxis, ref Vector3I.Up);
@@ -2103,9 +1694,9 @@ namespace Sandbox.Game.Entities
 
         #region GizmoTests
 
-        public static void PrepareCharacterCollisionPoints(List<Vector3> outList)
+        public static void PrepareCharacterCollisionPoints(List<Vector3D> outList)
         {
-            MyCharacter character = (MySession.ControlledEntity as MyCharacter);
+            MyCharacter character = (MySession.Static.ControlledEntity as MyCharacter);
             if (character == null) return;
 
             float height = character.Definition.CharacterCollisionHeight * 0.7f;
@@ -2119,14 +1710,14 @@ namespace Sandbox.Game.Entities
                 Vector3 upVec = character.PositionComp.LocalMatrix.Up * height;
                 Vector3 fwVec = character.PositionComp.LocalMatrix.Forward * width;
                 Vector3 rtVec = character.PositionComp.LocalMatrix.Right * width;
-                Vector3 pos = character.Entity.PositionComp.GetPosition() + character.PositionComp.LocalMatrix.Up * 0.2f;
+                Vector3D pos = character.Entity.PositionComp.GetPosition() + character.PositionComp.LocalMatrix.Up * 0.2f;
 
                 float angle = 0.0f;
                 for (int i = 0; i < 6; ++i)
                 {
                     float sin = (float)Math.Sin(angle);
                     float cos = (float)Math.Cos(angle);
-                    Vector3 bottomPoint = pos + sin * rtVec + cos * fwVec;
+                    Vector3D bottomPoint = pos + sin * rtVec + cos * fwVec;
                     outList.Add(bottomPoint);
                     outList.Add(bottomPoint + upVec);
                     angle += (float)Math.PI / 3.0f;
@@ -2141,25 +1732,48 @@ namespace Sandbox.Game.Entities
             if (!gizmoSpace.Enabled)
                 return;
 
+            ProfilerShort.Begin("CanBuild");
+            if (MyCubeBuilder.Static.canBuild == false)
+            {
+                gizmoSpace.m_showGizmoCube = false;
+                gizmoSpace.m_buildAllowed = false;
+            }
             if (MyFakes.ENABLE_BATTLE_SYSTEM && MySession.Static.Battle)
             {
                 gizmoSpace.m_showGizmoCube = false;
                 gizmoSpace.m_buildAllowed = false;
+                ProfilerShort.End();
                 return;
             }
 
-            if (CurrentGrid != null)
+            
+            if (DynamicMode)
             {
-                UpdateGizmo_Grid(gizmoSpace, add, remove, draw);
-            }
-            else if (CurrentVoxelMap != null)
-            {
-                UpdateGizmo_VoxelMap(gizmoSpace, add, remove, draw);
-            }
-            else if (DynamicMode)
-            {
+                ProfilerShort.BeginNextBlock("UpdateGizmo_DynamicMode");
                 UpdateGizmo_DynamicMode(gizmoSpace);
             }
+            else if (CurrentGrid != null)
+            {
+                ProfilerShort.BeginNextBlock("UpdateGizmo_Grid");
+                UpdateGizmo_Grid(gizmoSpace, add, remove, draw);
+            }
+            //if (CurrentGrid != null)
+            //{
+            //    ProfilerShort.BeginNextBlock("UpdateGizmo_Grid");
+            //    UpdateGizmo_Grid(gizmoSpace, add, remove, draw);
+            //}
+            //else if (DynamicMode)
+            //{
+            //    ProfilerShort.BeginNextBlock("UpdateGizmo_DynamicMode");
+            //    UpdateGizmo_DynamicMode(gizmoSpace);
+            //}
+            else// if (CurrentVoxelBase != null)
+            {
+                ProfilerShort.BeginNextBlock("UpdateGizmo_VoxelMap");
+                UpdateGizmo_VoxelMap(gizmoSpace, add, remove, draw);
+            }
+            
+            ProfilerShort.End();
         }
 
         private void UpdateGizmo_DynamicMode(MyCubeBuilderGizmo.MyGizmoSpaceProperties gizmoSpace)
@@ -2169,21 +1783,35 @@ namespace Sandbox.Game.Entities
             float gridSize = MyDefinitionManager.Static.GetCubeSize(CurrentBlockDefinition.CubeSize);
             BoundingBoxD localAABB = new BoundingBoxD(-CurrentBlockDefinition.Size * gridSize * 0.5f, CurrentBlockDefinition.Size * gridSize * 0.5f);
 
-            var settings = CurrentBlockDefinition.CubeSize == MyCubeSize.Large ? MyPerGameSettings.PastingSettings.LargeGrid : MyPerGameSettings.PastingSettings.SmallGrid;
+            var settings = CurrentBlockDefinition.CubeSize == MyCubeSize.Large ? CubeBuilderDefinition.BuildingSettings.LargeGrid : CubeBuilderDefinition.BuildingSettings.SmallGrid;
             MatrixD drawMatrix = gizmoSpace.m_worldMatrixAdd;
 
-            BuildComponent.GetGridSpawnMaterials(CurrentBlockDefinition, drawMatrix, false);
-            gizmoSpace.m_buildAllowed &= BuildComponent.HasBuildingMaterials(MySession.LocalCharacter);
+            MyCubeGrid.GetCubeParts(CurrentBlockDefinition, Vector3I.Zero, Matrix.Identity, gridSize, gizmoSpace.m_cubeModelsTemp, gizmoSpace.m_cubeMatricesTemp, gizmoSpace.m_cubeNormals, gizmoSpace.m_patternOffsets);
 
-            if (MySession.Static.SurvivalMode && !SpectatorIsBuilding)
+            if (gizmoSpace.m_showGizmoCube)
             {
-                //MatrixD inverseDrawMatrix = MatrixD.Invert(drawMatrix);
-                //if (!MyCubeBuilderGizmo.DefaultGizmoCloseEnough(ref inverseDrawMatrix, localAABB, gridSize, IntersectionDistance) 
-                //    || MySession.GetCameraControllerEnum() == MyCameraControllerEnum.Spectator)
-                //{
-                //    gizmoSpace.m_buildAllowed = false;
-                //    gizmoSpace.m_removeBlock = null;
-                //}
+                //MatrixD invDrawMatrix = MatrixD.Invert(gizmoSpace.m_worldMatrixAdd);
+
+                m_gizmo.AddFastBuildParts(gizmoSpace, CurrentBlockDefinition, null);
+                m_gizmo.UpdateGizmoCubeParts(gizmoSpace, m_renderData, ref MatrixD.Identity, CurrentBlockDefinition);
+            }
+
+            BuildComponent.GetGridSpawnMaterials(CurrentBlockDefinition, drawMatrix, false);
+            if (MySession.Static.IsAdminModeEnabled(Sync.MyId) == false)
+            {
+                gizmoSpace.m_buildAllowed &= BuildComponent.HasBuildingMaterials(MySession.Static.LocalCharacter);
+            }
+
+            
+            MatrixD inverseDrawMatrix = MatrixD.Invert(drawMatrix);
+            if (MySession.Static.SurvivalMode && !SpectatorIsBuilding && !MySession.Static.IsAdminModeEnabled(Sync.MyId))
+            {
+                if (!MyCubeBuilderGizmo.DefaultGizmoCloseEnough(ref inverseDrawMatrix, localAABB, gridSize, IntersectionDistance) 
+                    || MySession.Static.GetCameraControllerEnum() == MyCameraControllerEnum.Spectator)
+                {
+                    gizmoSpace.m_buildAllowed = false;
+                    gizmoSpace.m_removeBlock = null;
+                }
 
                 if (CameraControllerSpectator)
                 {
@@ -2196,7 +1824,7 @@ namespace Sandbox.Game.Entities
             // m_buildAllowed is set in shape cast
             if (!gizmoSpace.m_dynamicBuildAllowed)
             {
-                bool placementTest = MyCubeGrid.TestBlockPlacementArea(CurrentBlockDefinition, null, drawMatrix, ref settings, localAABB, DynamicMode);
+                bool placementTest = MyCubeGrid.TestBlockPlacementArea(CurrentBlockDefinition, null, drawMatrix, ref settings, localAABB, DynamicMode);//DynamicModeVoxelTest);
                 gizmoSpace.m_buildAllowed &= placementTest;
             }
             gizmoSpace.m_showGizmoCube = true;
@@ -2204,8 +1832,9 @@ namespace Sandbox.Game.Entities
             gizmoSpace.m_cubeMatricesTemp.Clear();
             gizmoSpace.m_cubeModelsTemp.Clear();
 
+            m_rotationHints.CalculateRotationHints(drawMatrix, localAABB, !MyHud.MinimalHud && MySandboxGame.Config.RotationHints && MyFakes.ENABLE_ROTATION_HINTS);
+
             // In dynamic mode gizmo cube is shown even if it intersects character
-            MatrixD inverseDrawMatrix = MatrixD.Invert(drawMatrix);
             gizmoSpace.m_buildAllowed &= !IntersectsCharacterOrCamera(gizmoSpace, gridSize, ref inverseDrawMatrix);
 
             if (gizmoSpace.m_showGizmoCube)
@@ -2227,7 +1856,8 @@ namespace Sandbox.Game.Entities
                     string model = gizmoSpace.m_cubeModelsTemp[i];
                     if (!string.IsNullOrEmpty(model))
                     {
-                        m_renderData.AddInstance(MyModel.GetId(model), gizmoSpace.m_cubeMatricesTemp[i], ref MatrixD.Identity);
+                        var mId = MyModel.GetId(model);
+                        m_renderData.AddInstance(mId, gizmoSpace.m_cubeMatricesTemp[i], ref MatrixD.Identity);
                     }
                 }
             }
@@ -2236,18 +1866,13 @@ namespace Sandbox.Game.Entities
         private void UpdateGizmo_VoxelMap(MyCubeBuilderGizmo.MyGizmoSpaceProperties gizmoSpace, bool add, bool remove, bool draw)
         {
             Color green = new Color(Color.Green * 0.6f, 1f);
-            Color red = new Color(Color.Red * 0.8f, 1);
-            Color yellow = Color.Yellow;
-            Color blue = Color.Blue;
-            //Vector4 black = Color.Black.ToVector4();
-            Color gray = Color.Gray;
 
             float gridSize = MyDefinitionManager.Static.GetCubeSize(CurrentBlockDefinition.CubeSize);
 
             Vector3 temp;
             Vector3D worldCenter = Vector3D.Zero;
-            Vector3D worldPos = gizmoSpace.m_worldMatrixAdd.Translation;
             MatrixD drawMatrix = gizmoSpace.m_worldMatrixAdd;
+            MatrixD localOrientation = gizmoSpace.m_localMatrixAdd.GetOrientation();
 
             Color color = green;
 
@@ -2258,18 +1883,15 @@ namespace Sandbox.Game.Entities
                 for (temp.Y = 0; temp.Y < CurrentBlockDefinition.Size.Y; temp.Y++)
                     for (temp.Z = 0; temp.Z < CurrentBlockDefinition.Size.Z; temp.Z++)
                     {
-                        color = gizmoSpace.m_buildAllowed ? green : gray;
-
                         Vector3I gridPosition = gizmoSpace.m_positions[posIndex++];
-                        Vector3D tempWorldPos = gridPosition * gridSize;
-                        if (!MyPerGameSettings.BuildingSettings.StaticGridAlignToCenter)
-                            tempWorldPos -= 0.5 * gridSize;
+                        Vector3D gridRelative = gridPosition * gridSize;
+                        if (!CubeBuilderDefinition.BuildingSettings.StaticGridAlignToCenter)
+                            gridRelative += new Vector3D(0.5 * gridSize, 0.5 * gridSize, -0.5 * gridSize);
+                        Vector3D tempWorldPos = Vector3D.Transform(gridRelative, gizmoSpace.m_worldMatrixAdd);
 
                         worldCenter += tempWorldPos;
 
-                        drawMatrix.Translation = tempWorldPos;
-
-                        MyCubeGrid.GetCubeParts(CurrentBlockDefinition, gridPosition, gizmoSpace.m_localMatrixAdd.GetOrientation(), gridSize, gizmoSpace.m_cubeModelsTemp, gizmoSpace.m_cubeMatricesTemp, gizmoSpace.m_cubeNormals, gizmoSpace.m_patternOffsets);
+                        MyCubeGrid.GetCubeParts(CurrentBlockDefinition, gridPosition, localOrientation, gridSize, gizmoSpace.m_cubeModelsTemp, gizmoSpace.m_cubeMatricesTemp, gizmoSpace.m_cubeNormals, gizmoSpace.m_patternOffsets);
 
                         if (gizmoSpace.m_showGizmoCube)
                         {
@@ -2280,29 +1902,35 @@ namespace Sandbox.Game.Entities
                                 gizmoSpace.m_cubeMatricesTemp[i] = modelMatrix;
                             }
 
+                            MatrixD invDrawMatrix = MatrixD.Invert(localOrientation * MatrixD.CreateTranslation(tempWorldPos));
+
                             m_gizmo.AddFastBuildParts(gizmoSpace, CurrentBlockDefinition, null);
-                            m_gizmo.UpdateGizmoCubeParts(gizmoSpace, m_renderData, ref MatrixD.Identity);
+                            m_gizmo.UpdateGizmoCubeParts(gizmoSpace, m_renderData, ref invDrawMatrix, CurrentBlockDefinition);
                         }
                     }
 
             //calculate world center for block model
             worldCenter /= CurrentBlockDefinition.Size.Size;
             drawMatrix.Translation = worldCenter;
+            drawMatrix = localOrientation * drawMatrix;
 
             BoundingBoxD localAABB = new BoundingBoxD(-CurrentBlockDefinition.Size * gridSize * 0.5f, CurrentBlockDefinition.Size * gridSize * 0.5f);
 
-            var settings = CurrentBlockDefinition.CubeSize == MyCubeSize.Large ? MyPerGameSettings.BuildingSettings.LargeStaticGrid : MyPerGameSettings.BuildingSettings.SmallStaticGrid;
+            var settings = CurrentBlockDefinition.CubeSize == MyCubeSize.Large ? CubeBuilderDefinition.BuildingSettings.LargeStaticGrid : CubeBuilderDefinition.BuildingSettings.SmallStaticGrid;
             MyBlockOrientation blockOrientation = new MyBlockOrientation(ref Quaternion.Identity);
-            bool placementTest = CheckValidBlockRotation(gizmoSpace.m_worldMatrixAdd, CurrentBlockDefinition.Direction, CurrentBlockDefinition.Rotation)
+            bool placementTest = CheckValidBlockRotation(gizmoSpace.m_localMatrixAdd, CurrentBlockDefinition.Direction, CurrentBlockDefinition.Rotation)
                 && MyCubeGrid.TestBlockPlacementArea(CurrentBlockDefinition, blockOrientation, drawMatrix, ref settings, localAABB, false);
             gizmoSpace.m_buildAllowed &= placementTest;
             gizmoSpace.m_buildAllowed &= gizmoSpace.m_showGizmoCube;
             gizmoSpace.m_worldMatrixAdd = drawMatrix;
 
             BuildComponent.GetGridSpawnMaterials(CurrentBlockDefinition, drawMatrix, true);
-            gizmoSpace.m_buildAllowed &= BuildComponent.HasBuildingMaterials(MySession.LocalCharacter);
+            if (MySession.Static.IsAdminModeEnabled(Sync.MyId) == false)
+            {
+                gizmoSpace.m_buildAllowed &= BuildComponent.HasBuildingMaterials(MySession.Static.LocalCharacter);
+            }
 
-            if (MySession.Static.SurvivalMode && !SpectatorIsBuilding)
+            if (MySession.Static.SurvivalMode && !SpectatorIsBuilding && MySession.Static.IsAdminModeEnabled(Sync.MyId) == false)
             {
                 BoundingBoxD gizmoBox = localAABB.Transform(ref drawMatrix);
 
@@ -2315,7 +1943,7 @@ namespace Sandbox.Game.Entities
                 }
             }
 
-            //color = gizmoSpace.m_buildAllowed ? green : gray;
+
             color = Color.White;
             string lineMaterial = gizmoSpace.m_buildAllowed ? "GizmoDrawLine" : "GizmoDrawLineRed";
 
@@ -2339,7 +1967,7 @@ namespace Sandbox.Game.Entities
                 }
 
                 AddFastBuildModels(gizmoSpace, MatrixD.Identity, gizmoSpace.m_cubeMatricesTemp, gizmoSpace.m_cubeModelsTemp, gizmoSpace.m_blockDefinition);
-
+                
                 Debug.Assert(gizmoSpace.m_cubeMatricesTemp.Count == gizmoSpace.m_cubeModelsTemp.Count);
                 for (int i = 0; i < gizmoSpace.m_cubeMatricesTemp.Count; ++i)
                 {
@@ -2353,6 +1981,7 @@ namespace Sandbox.Game.Entities
 
         private void UpdateGizmo_Grid(MyCubeBuilderGizmo.MyGizmoSpaceProperties gizmoSpace, bool add, bool remove, bool draw)
         {
+            ProfilerShort.Begin("Colors");
             Color green = new Color(Color.Green * 0.6f, 1f);
             Color red = new Color(Color.Red * 0.8f, 1);
             Color yellow = Color.Yellow;
@@ -2360,6 +1989,7 @@ namespace Sandbox.Game.Entities
             Color gray = Color.Gray;
             Color white = Color.White;
 
+            ProfilerShort.BeginNextBlock("Add");
             if (add)
             {
                 if (gizmoSpace.m_startBuild != null && gizmoSpace.m_continueBuild != null)
@@ -2368,25 +1998,41 @@ namespace Sandbox.Game.Entities
                 }
 
                 if (PlacingSmallGridOnLargeStatic && gizmoSpace.m_positionsSmallOnLarge.Count == 0)
+                {
+                    ProfilerShort.End();
                     return;
+                }
 
+                ProfilerShort.Begin("CurrentBlockDefinition");
                 if (CurrentBlockDefinition != null)
                 {
+                    ProfilerShort.Begin("GetOrientation");
                     Matrix addOrientationMat = gizmoSpace.m_localMatrixAdd.GetOrientation();
                     MyBlockOrientation gizmoAddOrientation = new MyBlockOrientation(ref addOrientationMat);
 
+                    ProfilerShort.BeginNextBlock("PlacingSmallGridOnLargeStatic");
                     // Test free space in the cube grid (& valid rotation of the block)
                     if (!PlacingSmallGridOnLargeStatic)
                     {
-                        gizmoSpace.m_buildAllowed &= CheckValidBlockRotation(gizmoSpace.m_localMatrixAdd, CurrentBlockDefinition.Direction, CurrentBlockDefinition.Rotation) 
-                            && CurrentGrid.CanPlaceBlock(gizmoSpace.m_min, gizmoSpace.m_max, gizmoAddOrientation, gizmoSpace.m_blockDefinition);
+                        ProfilerShort.Begin("CheckValidBlockRotation");
+                        bool isValidBlockRotation = CheckValidBlockRotation(gizmoSpace.m_localMatrixAdd, CurrentBlockDefinition.Direction, CurrentBlockDefinition.Rotation);
+                        ProfilerShort.BeginNextBlock("CanPlaceBlock");
+                        bool canPlaceBlock = CurrentGrid.CanPlaceBlock(gizmoSpace.m_min, gizmoSpace.m_max, gizmoAddOrientation, gizmoSpace.m_blockDefinition);
+                        ProfilerShort.BeginNextBlock("m_buildAllowed");
+                        gizmoSpace.m_buildAllowed &= isValidBlockRotation && canPlaceBlock;
+                        ProfilerShort.End();
                     }
 
+                    ProfilerShort.BeginNextBlock("IsAdminModeEnabled");
                     MyCubeBuilder.BuildComponent.GetBlockPlacementMaterials(gizmoSpace.m_blockDefinition, gizmoSpace.m_addPos, gizmoAddOrientation, CurrentGrid);
-                    gizmoSpace.m_buildAllowed &= MyCubeBuilder.BuildComponent.HasBuildingMaterials(MySession.LocalCharacter);
+                    if (MySession.Static.IsAdminModeEnabled(Sync.MyId) == false)
+                    {
+                        gizmoSpace.m_buildAllowed &= MyCubeBuilder.BuildComponent.HasBuildingMaterials(MySession.Static.LocalCharacter);
+                    }
 
+                    ProfilerShort.BeginNextBlock("SurvivalMode");
                     // In survival, check whether you're close enough, and have enough materials or haven't built for long enough
-                    if (!PlacingSmallGridOnLargeStatic && MySession.Static.SurvivalMode && !SpectatorIsBuilding)
+                    if (!PlacingSmallGridOnLargeStatic && MySession.Static.SurvivalMode && MySession.Static.IsAdminModeEnabled(Sync.MyId) == false && !SpectatorIsBuilding)
                     {
                         Vector3 localMin = (m_gizmo.SpaceDefault.m_min - new Vector3(0.5f)) * CurrentGrid.GridSize;
                         Vector3 localMax = (m_gizmo.SpaceDefault.m_max + new Vector3(0.5f)) * CurrentGrid.GridSize;
@@ -2396,24 +2042,38 @@ namespace Sandbox.Game.Entities
                         {
                             gizmoSpace.m_buildAllowed = false;
                             gizmoSpace.m_removeBlock = null;
+
+                            ProfilerShort.End();
+                            ProfilerShort.End();
+                            ProfilerShort.End();
                             return;
                         }
                     }
 
+                    ProfilerShort.BeginNextBlock("m_buildAllowed");
                     // Check whether mount points match any of its neighbors (only if we can build here though).
                     if (gizmoSpace.m_buildAllowed)
                     {
+                        ProfilerShort.Begin("CreateFromRotationMatrix");
                         Quaternion.CreateFromRotationMatrix(ref gizmoSpace.m_localMatrixAdd, out gizmoSpace.m_rotation);
 
+                        ProfilerShort.BeginNextBlock("SymmetryPlane");
 						if (gizmoSpace.SymmetryPlane == MySymmetrySettingModeEnum.Disabled && !PlacingSmallGridOnLargeStatic)
 						{
+                            ProfilerShort.Begin("GetBuildProgressModelMountPoints");
 							var mountPoints = CurrentBlockDefinition.GetBuildProgressModelMountPoints(MyComponentStack.NewBlockIntegrity);
+                            
+                            ProfilerShort.BeginNextBlock("CheckConnectivity");
 							gizmoSpace.m_buildAllowed = MyCubeGrid.CheckConnectivity(CurrentGrid, CurrentBlockDefinition, mountPoints, ref gizmoSpace.m_rotation, ref gizmoSpace.m_centerPos);
+                            
+                            ProfilerShort.End();
 						}
+                        ProfilerShort.End();
                     }
 
                     Color color = green;
 
+                    ProfilerShort.BeginNextBlock("DisableInside");
                     // Disable gizmo cubes when the camera is inside the currently displayed cube or where the character is inside the cube
                     if (PlacingSmallGridOnLargeStatic)
                     {
@@ -2425,13 +2085,6 @@ namespace Sandbox.Game.Entities
                         gizmoSpace.m_showGizmoCube = !IntersectsCharacterOrCamera(gizmoSpace, CurrentGrid.GridSize, ref m_invGridWorldMatrix);
                     }
 
-                    // Disable building from cockpit
-                    if (MySession.ControlledEntity != null && MySession.ControlledEntity is MyCockpit && !SpectatorIsBuilding)
-                    {
-                        gizmoSpace.m_showGizmoCube = false;
-                        return;
-                    }
-
                     gizmoSpace.m_buildAllowed &= gizmoSpace.m_showGizmoCube;
 
                     Vector3 temp;
@@ -2439,6 +2092,7 @@ namespace Sandbox.Game.Entities
                     Vector3D worldPos = gizmoSpace.m_worldMatrixAdd.Translation;
                     MatrixD drawMatrix = gizmoSpace.m_worldMatrixAdd;
 
+                    ProfilerShort.BeginNextBlock("DrawGizmo");
                     int posIndex = 0;
                     for (temp.X = 0; temp.X < CurrentBlockDefinition.Size.X; temp.X++)
                         for (temp.Y = 0; temp.Y < CurrentBlockDefinition.Size.Y; temp.Y++)
@@ -2482,19 +2136,6 @@ namespace Sandbox.Game.Entities
                                     worldCenter += tempWorldPos;
                                     drawMatrix.Translation = tempWorldPos;
 
-                                    //if (temp == center)
-                                    //{
-                                    //    //if bigger block, show its center with black color
-                                    //    if (CurrentBlockDefinition.Size.Size > 1)
-                                    //        color = black;
-
-                                    //    if (gizmoSpace.SymmetryPlane == MySymmetrySettingModeEnum.Disabled)
-                                    //    {
-                                    //        //VRageRender.MyRenderProxy.DebugDrawLine3D(tempWorldPos, tempWorldPos - worldDir * CurrentGrid.GridSize, Color.Purple, Color.Gray, false);
-                                    //        //VRageRender.MyRenderProxy.DebugDrawAxis(drawMatrix, 2, false);
-                                    //    }
-                                    //}
-
                                     MyCubeGrid.GetCubeParts(CurrentBlockDefinition, gridPosition, gizmoSpace.m_localMatrixAdd.GetOrientation(), CurrentGrid.GridSize, gizmoSpace.m_cubeModelsTemp, gizmoSpace.m_cubeMatricesTemp, gizmoSpace.m_cubeNormals, gizmoSpace.m_patternOffsets);
 
                                     if (gizmoSpace.m_showGizmoCube)
@@ -2509,15 +2150,6 @@ namespace Sandbox.Game.Entities
                                         m_gizmo.AddFastBuildParts(gizmoSpace, CurrentBlockDefinition, CurrentGrid);
                                         m_gizmo.UpdateGizmoCubeParts(gizmoSpace, m_renderData, ref m_invGridWorldMatrix, CurrentBlockDefinition);
                                     }
-
-                                    //for (int i = 0; i < gizmoSpace.m_gizmoCubeRenderIds.Count; i++)
-                                    //{
-                                    //    Matrix modelMatrix = gizmoSpace.m_gizmoCubeMatricesTemp[i];
-                                    //    VRageRender.MyRenderProxy.UpdateRenderObject(gizmoSpace.m_gizmoCubeRenderIds[i], ref modelMatrix, false);
-                                    //}
-
-                                    //MySimpleObjectDraw.DrawTransparentBox(ref drawMatrix,
-                                    //  ref box, ref color, MySimpleObjectRasterizer.Solid, 1, 0.04f);
                                 }
                             }
 
@@ -2529,28 +2161,39 @@ namespace Sandbox.Game.Entities
                     float gridSize = PlacingSmallGridOnLargeStatic ? MyDefinitionManager.Static.GetCubeSize(CurrentBlockDefinition.CubeSize) : CurrentGrid.GridSize;
                     BoundingBoxD localAABB = new BoundingBoxD(-CurrentBlockDefinition.Size * gridSize * 0.5f, CurrentBlockDefinition.Size * gridSize * 0.5f);
 
+                    // Test voxel only here. Cube placement was tested earlier.
+                    var settingsVoxelTest = CubeBuilderDefinition.BuildingSettings.GetGridPlacementSettings(CurrentBlockDefinition.CubeSize, CurrentGrid.IsStatic);
+                    MyBlockOrientation orientation = new MyBlockOrientation(ref Quaternion.Identity);
+                    bool voxelTest = MyCubeGrid.TestVoxelPlacement(CurrentBlockDefinition, settingsVoxelTest, false, drawMatrix, localAABB);
+                    gizmoSpace.m_buildAllowed &= voxelTest;
+
+                    ProfilerShort.BeginNextBlock("CheckConnectivity");
                     if (PlacingSmallGridOnLargeStatic)
                     {
-                        if (MySession.Static.SurvivalMode && !SpectatorIsBuilding)
+                        if (MySession.Static.SurvivalMode && !SpectatorIsBuilding && MySession.Static.IsAdminModeEnabled(Sync.MyId) == false)
                         {
                             MatrixD invDrawMatrix = Matrix.Invert(drawMatrix);
 
                             MyCubeBuilder.BuildComponent.GetBlockPlacementMaterials(CurrentBlockDefinition, gizmoSpace.m_addPos, gizmoAddOrientation, CurrentGrid);
-                            gizmoSpace.m_buildAllowed &= MyCubeBuilder.BuildComponent.HasBuildingMaterials(MySession.LocalCharacter);
+                            
+                            gizmoSpace.m_buildAllowed &= MyCubeBuilder.BuildComponent.HasBuildingMaterials(MySession.Static.LocalCharacter);
 
                             if (!MyCubeBuilderGizmo.DefaultGizmoCloseEnough(ref invDrawMatrix, localAABB, gridSize, IntersectionDistance) || CameraControllerSpectator)
                             {
                                 gizmoSpace.m_buildAllowed = false;
                                 gizmoSpace.m_removeBlock = null;
+
+                                ProfilerShort.End();
+                                ProfilerShort.End();
+                                ProfilerShort.End();
                                 return;
                             }
                         }
 
-                        var settings = MyPerGameSettings.BuildingSettings.GetGridPlacementSettings(CurrentGrid);
+                        var settings = CubeBuilderDefinition.BuildingSettings.GetGridPlacementSettings(CurrentGrid.GridSizeEnum, CurrentGrid.IsStatic);
                         // Orientation is identity (local), because it is represented in world matrix also.
-                        MyBlockOrientation orientation = new MyBlockOrientation(ref Quaternion.Identity);
                         bool placementTest = CheckValidBlockRotation(gizmoSpace.m_localMatrixAdd, CurrentBlockDefinition.Direction, CurrentBlockDefinition.Rotation)
-                            && MyCubeGrid.TestBlockPlacementArea(CurrentBlockDefinition, orientation, drawMatrix, ref settings, localAABB, false);
+                            && MyCubeGrid.TestBlockPlacementArea(CurrentBlockDefinition, orientation, drawMatrix, ref settings, localAABB, !CurrentGrid.IsStatic, testVoxel: false);
                         gizmoSpace.m_buildAllowed &= placementTest;
 
                         if (gizmoSpace.m_buildAllowed && gizmoSpace.SymmetryPlane == MySymmetrySettingModeEnum.Disabled)
@@ -2564,17 +2207,46 @@ namespace Sandbox.Game.Entities
                     color = Color.White;
                     string lineMaterial = gizmoSpace.m_buildAllowed ? "GizmoDrawLine" : "GizmoDrawLineRed";
 
+                    ProfilerShort.BeginNextBlock("SymmetryPlane 2");
                     if (gizmoSpace.SymmetryPlane == MySymmetrySettingModeEnum.Disabled)
                     {
-                        MySimpleObjectDraw.DrawTransparentBox(ref drawMatrix,
-                            ref localAABB, ref color, MySimpleObjectRasterizer.Wireframe, 1, 0.04f, lineMaterial: lineMaterial);
+                        ProfilerShort.Begin("DrawTransparentBox");
+                        if (MyFakes.ENABLE_VR_BUILDING)
+                        {
+                            Vector3 centerOffset = -0.5f * gizmoSpace.m_addDir;
+                            if (gizmoSpace.m_addPosSmallOnLarge != null) 
+                            {
+                                float smallToLarge = MyDefinitionManager.Static.GetCubeSize(CurrentBlockDefinition.CubeSize) / CurrentGrid.GridSize;
+                                centerOffset = -0.5f * smallToLarge * gizmoSpace.m_addDir;
+                            }
+                            centerOffset *= CurrentGrid.GridSize;
 
+                            Vector3I rotatedSize = Vector3I.Round(Vector3.Abs(Vector3.TransformNormal((Vector3)CurrentBlockDefinition.Size, gizmoSpace.m_localMatrixAdd)));
+                            Vector3I invAddDir = Vector3I.One - Vector3I.Abs(gizmoSpace.m_addDir);
+                            Vector3 halfExtends = gridSize * 0.5f * (rotatedSize * invAddDir) + 0.02f * Vector3I.Abs(gizmoSpace.m_addDir);
+
+                            BoundingBoxD vrAabb = new BoundingBoxD(-halfExtends + centerOffset, halfExtends + centerOffset);
+
+                            MySimpleObjectDraw.DrawTransparentBox(ref drawMatrix,
+                                ref vrAabb, ref color, MySimpleObjectRasterizer.Wireframe, 1, gizmoSpace.m_addPosSmallOnLarge != null ? 0.04f : 0.06f, null, lineMaterial, false, -1, 0);
+                        }
+                        else
+                        {
+                            MySimpleObjectDraw.DrawTransparentBox(ref drawMatrix,
+                                ref localAABB, ref color, MySimpleObjectRasterizer.Wireframe, 1, 0.04f, null, lineMaterial, false, -1, 0);
+                        }
+
+                        ProfilerShort.BeginNextBlock("CalculateRotationHints");
                         m_rotationHints.CalculateRotationHints(drawMatrix, localAABB, !MyHud.MinimalHud && MySandboxGame.Config.RotationHints && draw && MyFakes.ENABLE_ROTATION_HINTS);
+
+                        ProfilerShort.End();
                     }
 
+                    ProfilerShort.BeginNextBlock("Clear");
                     gizmoSpace.m_cubeMatricesTemp.Clear();
                     gizmoSpace.m_cubeModelsTemp.Clear();
 
+                    ProfilerShort.BeginNextBlock("m_showGizmoCube");
                     if (gizmoSpace.m_showGizmoCube)
                     {
                         // Draw mount points of added cube block as yellow squares in neighboring cells.
@@ -2590,7 +2262,7 @@ namespace Sandbox.Game.Entities
                         Vector3D rotatedModelOffset;
                         Vector3D.TransformNormal(ref CurrentBlockDefinition.ModelOffset, ref gizmoSpace.m_worldMatrixAdd, out rotatedModelOffset);
 
-                        drawMatrix.Translation = worldCenter + rotatedModelOffset;
+                        drawMatrix.Translation = worldCenter + CurrentGrid.GridScale * rotatedModelOffset;
 
                         AddFastBuildModels(gizmoSpace, drawMatrix, gizmoSpace.m_cubeMatricesTemp, gizmoSpace.m_cubeModelsTemp, gizmoSpace.m_blockDefinition);
 
@@ -2602,17 +2274,24 @@ namespace Sandbox.Game.Entities
                                 m_renderData.AddInstance(MyModel.GetId(model), gizmoSpace.m_cubeMatricesTemp[i], ref m_invGridWorldMatrix);
                         }
                     }
+
+                    ProfilerShort.End();
                 }
+                ProfilerShort.End();
             }
 
+            ProfilerShort.BeginNextBlock("After Add");
             if (gizmoSpace.m_startRemove != null && gizmoSpace.m_continueBuild != null)
             {
                 gizmoSpace.m_buildAllowed = true;
 
+                ProfilerShort.Begin("DrawRemovingCubes");
                 DrawRemovingCubes(gizmoSpace.m_startRemove, gizmoSpace.m_continueBuild, gizmoSpace.m_removeBlock);
+                ProfilerShort.End();
             }
             else if (remove && gizmoSpace.m_showGizmoCube && ShowRemoveGizmo)
             {
+                ProfilerShort.Begin("ShowRemoveGizmo");
                 if (gizmoSpace.m_removeBlocksInMultiBlock.Count > 0)
                 {
                     m_tmpBlockPositionsSet.Clear();
@@ -2625,7 +2304,10 @@ namespace Sandbox.Game.Entities
                     m_tmpBlockPositionsSet.Clear();
                 }
                 else if (gizmoSpace.m_removeBlock != null)
+                {
+                    if (!MyFakes.ENABLE_VR_BUILDING)
                         DrawSemiTransparentBox(CurrentGrid, gizmoSpace.m_removeBlock, red, lineMaterial: "GizmoDrawLineRed");
+                }
 
                 if (gizmoSpace.m_removeBlock != null && MyDebugDrawSettings.ENABLE_DEBUG_DRAW && MyDebugDrawSettings.DEBUG_DRAW_REMOVE_CUBE_COORDS)
                 {
@@ -2643,9 +2325,11 @@ namespace Sandbox.Game.Entities
 
                     MyRenderProxy.DebugDrawText3D(blockWorldPos, block.Position.ToString(), Color.White, 1.0f, false, MyGuiDrawAlignEnum.HORISONTAL_CENTER_AND_VERTICAL_CENTER);
                 }
+                ProfilerShort.End();
             }
             else
             {
+                ProfilerShort.Begin("SurvivalMode distance check");
                 if (MySession.Static.SurvivalMode && (!CameraControllerSpectator || MyFinalBuildConstants.IS_OFFICIAL))
                 {
                     Vector3 localMin = (m_gizmo.SpaceDefault.m_min - new Vector3(0.5f)) * CurrentGrid.GridSize;
@@ -2657,22 +2341,10 @@ namespace Sandbox.Game.Entities
                         gizmoSpace.m_removeBlock = null;
                     }
                 }
+                ProfilerShort.End();
             }
-        }
-
-        private bool CanStartConstruction()
-        {
-            /*if (!MySession.Static.SimpleSurvival && MySession.ControlledEntity is MyCharacter)
-            {
-                return (MySession.ControlledEntity as MyCharacter).CanStartConstruction(CurrentBlockDefinition);
-            }
-
-            if (MySession.Static.SimpleSurvival)
-            {
-                return CanBuildBlockSurvivalTime();
-            }*/
-
-            return false;
+            ProfilerShort.End();
+            //*/
         }
 
         private bool IntersectsCharacterOrCamera(MyCubeBuilderGizmo.MyGizmoSpaceProperties gizmoSpace, float gridSize, ref MatrixD inverseBlockInGridWorldMatrix)
@@ -2685,18 +2357,18 @@ namespace Sandbox.Game.Entities
             if (MySector.MainCamera != null)
             {
                 intersects = m_gizmo.PointInsideGizmo(MySector.MainCamera.Position, gizmoSpace.SourceSpace, ref inverseBlockInGridWorldMatrix, gridSize, 
-                        inflate: 0.05f, onVoxel: CurrentVoxelMap != null, dynamicMode: DynamicMode);
+                        inflate: 0.05f, onVoxel: CurrentVoxelBase != null, dynamicMode: DynamicMode);
             }
 
             if (intersects)
                 return true;
 
-            if (MySession.ControlledEntity != null && MySession.ControlledEntity is MyCharacter)
+            if (MySession.Static.ControlledEntity != null && MySession.Static.ControlledEntity is MyCharacter)
             {
                 m_collisionTestPoints.Clear();
                 PrepareCharacterCollisionPoints(m_collisionTestPoints);
                 intersects = m_gizmo.PointsAABBIntersectsGizmo(m_collisionTestPoints, gizmoSpace.SourceSpace, ref inverseBlockInGridWorldMatrix, gridSize, 
-                        inflate: 0.05f, onVoxel: CurrentVoxelMap != null, dynamicMode: DynamicMode);
+                        inflate: 0.05f, onVoxel: CurrentVoxelBase != null, dynamicMode: DynamicMode);
             }
 
             return intersects;
@@ -2772,15 +2444,15 @@ namespace Sandbox.Game.Entities
         protected HashSet<MyCubeGrid.MyBlockLocation> m_blocksBuildQueue = new HashSet<MyCubeGrid.MyBlockLocation>();
         protected List<Vector3I> m_tmpBlockPositionList = new List<Vector3I>();
         protected List<Tuple<Vector3I, ushort>> m_tmpCompoundBlockPositionIdList = new List<Tuple<Vector3I, ushort>>();
-        private List<MySlimBlock> m_tmpSlimBlocks = new List<MySlimBlock>();
         protected HashSet<Vector3I> m_tmpBlockPositionsSet = new HashSet<Vector3I>();
 
-
-        protected virtual void Add()
+        public virtual void Add()
         {
-            m_blocksBuildQueue.Clear();
+            // Cannot build if no block is selected
+            if (CurrentBlockDefinition == null)
+                return;
 
-            UpdateGizmos(true, true, false);
+            m_blocksBuildQueue.Clear();
 
             var playUnableSound = true;
 
@@ -2791,7 +2463,7 @@ namespace Sandbox.Game.Entities
                     if (!gizmoSpace.Enabled)
                         continue;
 
-                    if (gizmoSpace.m_buildAllowed)
+                    if ((gizmoSpace.m_buildAllowed && MyCubeBuilder.Static.canBuild))
                     {
                         playUnableSound = false;
 
@@ -2806,44 +2478,46 @@ namespace Sandbox.Game.Entities
             if (m_blocksBuildQueue.Count > 0)
             {
                 MyGuiAudio.PlaySound(MyGuiSounds.HudPlaceBlock);
-                CurrentGrid.BuildBlocks(MyPlayer.SelectedColor, m_blocksBuildQueue, MySession.LocalCharacterEntityId);
+                if (MyMusicController.Static != null)
+                    MyMusicController.Static.Building(2000);
+                CurrentGrid.BuildBlocks(MyPlayer.SelectedColor, m_blocksBuildQueue, MySession.Static.LocalCharacterEntityId, MySession.Static.LocalPlayerId);
             }
         }
 
         protected bool AddBlocksToBuildQueueOrSpawn(MyCubeBlockDefinition blockDefinition, ref MatrixD worldMatrixAdd, Vector3I min, Vector3I max, Vector3I center, Quaternion localOrientation)
         {
-            bool added = true;
 
+            bool added = false;
+            BuildData position = new BuildData();
             if (GridAndBlockValid)
             {
                 if (PlacingSmallGridOnLargeStatic)
                 {
-                    Vector3 offset = Vector3.Abs(Vector3.TransformNormal(MyCubeBlock.GetBlockGridOffset(blockDefinition), worldMatrixAdd));
                     MatrixD gridWorldMatrix = worldMatrixAdd;
-                    gridWorldMatrix.Translation -= offset;
+                    position.Position = gridWorldMatrix.Translation;
+                    position.Forward = (Vector3) gridWorldMatrix.Forward;
+                    position.Up = (Vector3) gridWorldMatrix.Up;
 
-                    MySyncCreate.RequestStaticGridSpawn(blockDefinition, gridWorldMatrix, MySession.LocalCharacterEntityId);
+                    MyMultiplayer.RaiseStaticEvent(s => RequestGridSpawn, MySession.Static.LocalCharacterEntityId, (DefinitionIdBlit)blockDefinition.Id, position, MySession.Static.IsAdminModeEnabled(Sync.MyId), true, MyPlayer.SelectedColor.PackHSVToUint());
                 }
                 else
                 {
-                    m_blocksBuildQueue.Add(new MyCubeGrid.MyBlockLocation(blockDefinition.Id, min, max, center, localOrientation, MyEntityIdentifier.AllocateId(), MySession.LocalPlayerId));
+                    m_blocksBuildQueue.Add(new MyCubeGrid.MyBlockLocation(blockDefinition.Id, min, max, center,
+                        localOrientation, MyEntityIdentifier.AllocateId(), MySession.Static.LocalPlayerId));
                 }
-            }
-            else if (VoxelMapAndBlockValid && !DynamicMode)
-            {
-                Vector3 offset = Vector3.Abs(Vector3.TransformNormal(MyCubeBlock.GetBlockGridOffset(blockDefinition), worldMatrixAdd));
-                MatrixD gridWorldMatrix = worldMatrixAdd;
-                gridWorldMatrix.Translation -= offset;
 
-                MySyncCreate.RequestStaticGridSpawn(blockDefinition, gridWorldMatrix, MySession.LocalCharacterEntityId);
-            }
-            else if (DynamicMode)
-            {
-                MySyncCreate.RequestDynamicGridSpawn(blockDefinition, worldMatrixAdd, MySession.LocalCharacterEntityId);
+                added = true;
             }
             else
             {
-                added = false;
+
+                position.Position = worldMatrixAdd.Translation;
+                position.Forward = worldMatrixAdd.Forward;
+                position.Up = worldMatrixAdd.Up;
+
+                MyMultiplayer.RaiseStaticEvent(s => RequestGridSpawn, MySession.Static.LocalCharacterEntityId, (DefinitionIdBlit)blockDefinition.Id, position, MySession.Static.IsAdminModeEnabled(Sync.MyId), false, MyPlayer.SelectedColor.PackHSVToUint());
+                MyGuiAudio.PlaySound(MyGuiSounds.HudPlaceBlock);
+                added = true;
             }
 
             return added;
@@ -2859,7 +2533,8 @@ namespace Sandbox.Game.Entities
         {
             if (CurrentBlockDefinition == null)
                 return;
-            if (CurrentGrid == null && CurrentVoxelMap == null && !DynamicMode)
+
+            if (CurrentGrid != null && CurrentGrid.Physics != null && CurrentGrid.Physics.RigidBody.HasProperty(HkCharacterRigidBody.MANIPULATED_OBJECT))
                 return;
 
             m_gizmo.SpaceDefault.m_blockDefinition = CurrentBlockDefinition;
@@ -2868,9 +2543,13 @@ namespace Sandbox.Game.Entities
 
             m_renderData.ClearInstanceData();
             m_rotationHints.Clear();
+            int gizmoCt = m_gizmo.Spaces.Length;
 
-            foreach (var gizmoSpace in m_gizmo.Spaces)
+            for (int i = 0; i < gizmoCt; i++)
             {
+                var gizmoSpace = m_gizmo.Spaces[i];
+
+                ProfilerShort.Begin("Prepare update");
                 bool spaceAddPos = addPos && BuildInputValid;
 
                 if (gizmoSpace.SymmetryPlane == MySymmetrySettingModeEnum.Disabled)
@@ -2885,7 +2564,9 @@ namespace Sandbox.Game.Entities
                     removePos &= UseSymmetry;
                 }
 
+                ProfilerShort.BeginNextBlock("UpdateGizmo");
                 UpdateGizmo(gizmoSpace, spaceAddPos || FreezeGizmo, removePos || FreezeGizmo, draw);
+                ProfilerShort.End();
             }
         }
 
@@ -2910,58 +2591,41 @@ namespace Sandbox.Game.Entities
             return new MyOrientedBoundingBoxD(new BoundingBoxD((Vector3D)minPos, (Vector3D)maxPos), m);
         }
 
-        public bool CanStartConstruction(MyEntity buildingEntity)
+        public virtual bool CanStartConstruction(MyEntity buildingEntity)
         {
-            if (m_shipCreationClipboard.IsActive)
-            {
-                return m_shipCreationClipboard.EntityCanPaste(buildingEntity);
+                var addMatrix = m_gizmo.SpaceDefault.m_worldMatrixAdd;
+                BuildComponent.GetGridSpawnMaterials(CurrentBlockDefinition, addMatrix, false);
+                return BuildComponent.HasBuildingMaterials(buildingEntity);
             }
-            else if (m_multiBlockCreationClipboard.IsActive)
-            {
-                return m_shipCreationClipboard.EntityCanPaste(buildingEntity);
-            }
-            else
-            {
-                if (MySession.Static.SimpleSurvival)
-                {
-                    return true;
-                }
-                else
-                {
-                    var addMatrix = m_gizmo.SpaceDefault.m_worldMatrixAdd;
-                    BuildComponent.GetGridSpawnMaterials(CurrentBlockDefinition, addMatrix, false);
-                    return BuildComponent.HasBuildingMaterials(buildingEntity);
-                }
-            }
-        }
 
-        public bool AddConstruction(MyEntity builder)
+        public virtual bool AddConstruction(MyEntity builder)
         {
             var controllingPlayer = Sync.Players.GetControllingPlayer(builder);
 
-            Debug.Assert(controllingPlayer != null && controllingPlayer.IsLocalPlayer, "Only local players can call AddConstruction!");
-            if (controllingPlayer == null || controllingPlayer.IsRemotePlayer) return false;
-
-            // The new ship creation clipboard is handled separately
-            if (m_shipCreationClipboard.IsActive)
+            if (canBuild == false ||(controllingPlayer  != null && controllingPlayer.IsLocalPlayer == false)) return false;
+     
+            if (controllingPlayer == null || controllingPlayer.IsRemotePlayer)
             {
-                return m_shipCreationClipboard.PasteGrid(MyCubeBuilder.BuildComponent.GetBuilderInventory(builder));
-            }
-
-            if (MyFakes.ENABLE_MULTIBLOCKS && MultiBlockCreationIsActivated)
-            {
-                if (m_multiBlockCreationClipboard.PasteGrid(MyCubeBuilder.BuildComponent.GetBuilderInventory(builder), false))
+                var cockpit = (builder as MyCharacter).IsUsing;
+                if (cockpit != null)
                 {
-                    if (MySession.Static.SimpleSurvival)
-                        m_lastBlockBuildTime = MySandboxGame.TotalGamePlayTimeInMilliseconds;
-                    return true;
+                    controllingPlayer = Sync.Players.GetControllingPlayer(cockpit);
+                    if (controllingPlayer == null || controllingPlayer.IsRemotePlayer)
+                    {
+                        Debug.Assert(controllingPlayer != null && controllingPlayer.IsLocalPlayer, "Only local players can call AddConstruction!");
+                        return false;
+                    }
                 }
-                return false;
+                else
+                {
+                    Debug.Assert(controllingPlayer != null && controllingPlayer.IsLocalPlayer, "Only local players can call AddConstruction! (cockpit is null)");
+                    return false;
+                }
             }
 
             var gizmoSpace = m_gizmo.SpaceDefault;
 
-            if (gizmoSpace.Enabled && BuildInputValid && gizmoSpace.m_buildAllowed && !MyEntities.MemoryLimitReachedReport)
+            if (gizmoSpace.Enabled && BuildInputValid && gizmoSpace.m_buildAllowed && canBuild && !MyEntities.MemoryLimitReachedReport)
             {
                 m_blocksBuildQueue.Clear();
                 bool added = AddBlocksToBuildQueueOrSpawn(gizmoSpace);
@@ -2969,12 +2633,13 @@ namespace Sandbox.Game.Entities
                 {
                     if (CurrentGrid != null && m_blocksBuildQueue.Count > 0)
                     {
+                        if (MySession.Static != null && builder == MySession.Static.LocalCharacter && MyMusicController.Static != null)
+                            MyMusicController.Static.Building(2000);
                         MyGuiAudio.PlaySound(MyGuiSounds.HudPlaceBlock);
-                        CurrentGrid.BuildBlocks(MyPlayer.SelectedColor, m_blocksBuildQueue, builder.EntityId);
+                        if (builder == MySession.Static.LocalCharacter)
+                            MySession.Static.TotalBlocksCreated++;
+                        CurrentGrid.BuildBlocks(MyPlayer.SelectedColor, m_blocksBuildQueue, builder.EntityId, controllingPlayer.Identity.IdentityId);
                     }
-
-                    if (MySession.Static.SimpleSurvival)
-                        m_lastBlockBuildTime = MySandboxGame.TotalGamePlayTimeInMilliseconds;
                 }
                 return added;
             }
@@ -2994,14 +2659,17 @@ namespace Sandbox.Game.Entities
             return posInt;
         }
 
-        public bool GetAddAndRemovePositions(float gridSize, bool placingSmallGridOnLargeStatic, out Vector3I addPos, out Vector3? addPosSmallOnLarge, out Vector3I addDir, out Vector3I removePos, out MySlimBlock removeBlock,
+        public void GetAddPosition(out Vector3D position)
+        {
+            position = m_gizmo.SpaceDefault.m_worldMatrixAdd.Translation;
+        }
+
+        public virtual bool GetAddAndRemovePositions(float gridSize, bool placingSmallGridOnLargeStatic, out Vector3I addPos, out Vector3? addPosSmallOnLarge, out Vector3I addDir, out Vector3I removePos, out MySlimBlock removeBlock,
             out ushort? compoundBlockId, HashSet<Tuple<MySlimBlock, ushort?>> removeBlocksInMultiBlock)
         {
             bool result = false;
 
-            addPos = new Vector3I();
             addPosSmallOnLarge = null;
-            addDir = new Vector3I();
             removePos = new Vector3I();
             removeBlock = null;
 
@@ -3009,11 +2677,13 @@ namespace Sandbox.Game.Entities
             Vector3D intersectedBlockPos;
             Vector3D intersectionBlockExact;
             result = GetBlockAddPosition(gridSize, placingSmallGridOnLargeStatic, out intersectedBlock, out intersectedBlockPos, out intersectionBlockExact, out addPos, out addDir, out compoundBlockId);
+            Debug.Assert(intersectedBlock == null || intersectedBlock.CubeGrid == CurrentGrid);
+            if (MySession.Static.ControlledEntity is MyShipController && m_currentGrid.Equals((MySession.Static.ControlledEntity as MyShipController).CubeGrid)) return false;
 
             float currentGridSize = placingSmallGridOnLargeStatic ? CurrentGrid.GridSize : gridSize;
 
             if (result && (MaxGridDistanceFrom == null
-                || Vector3D.DistanceSquared(intersectionBlockExact * currentGridSize, Vector3.Transform(MaxGridDistanceFrom.Value, m_invGridWorldMatrix)) < (MAX_BLOCK_BUILDING_DISTANCE * MAX_BLOCK_BUILDING_DISTANCE)))
+                || Vector3D.DistanceSquared(intersectionBlockExact * currentGridSize, Vector3.Transform(MaxGridDistanceFrom.Value, m_invGridWorldMatrix)) < (CubeBuilderDefinition.MaxBlockBuildingDistance * CubeBuilderDefinition.MaxBlockBuildingDistance)))
             {
                 removePos = Vector3I.Round(intersectedBlockPos);
                 removeBlock = intersectedBlock;
@@ -3032,38 +2702,45 @@ namespace Sandbox.Game.Entities
             {
                 result = false;
             }
+            if (MyCubeBuilder.Static.canBuild == false) return false;
 
             // Placing small on large grid
             if (result && placingSmallGridOnLargeStatic)
             {
-                if (intersectedBlock != null && intersectedBlock.FatBlock != null) 
+                MatrixD placingRotationMatrix = Matrix.Identity;
+                if (intersectedBlock != null) 
                 {
-                    if (compoundBlockId != null) 
+                    placingRotationMatrix = intersectedBlock.CubeGrid.WorldMatrix.GetOrientation();
+
+                    if (intersectedBlock.FatBlock != null) 
                     {
-                        MyCompoundCubeBlock cmpCubeBlock = intersectedBlock.FatBlock as MyCompoundCubeBlock;
-                        if (cmpCubeBlock != null)
+                        if (compoundBlockId != null) 
                         {
-                            var blockInCompound = cmpCubeBlock.GetBlock(compoundBlockId.Value);
-                            if (blockInCompound != null && blockInCompound.FatBlock.Components.Has<MyFractureComponentBase>())
+                            MyCompoundCubeBlock cmpCubeBlock = intersectedBlock.FatBlock as MyCompoundCubeBlock;
+                            if (cmpCubeBlock != null)
+                            {
+                                var blockInCompound = cmpCubeBlock.GetBlock(compoundBlockId.Value);
+                                if (blockInCompound != null && blockInCompound.FatBlock.Components.Has<MyFractureComponentBase>())
+                                    return false;
+                            }
+                        }
+                        else 
+                        {
+                            if (intersectedBlock.FatBlock.Components.Has<MyFractureComponentBase>())
                                 return false;
                         }
                     }
-                    else 
-                    {
-                        if (intersectedBlock.FatBlock.Components.Has<MyFractureComponentBase>())
-                            return false;
-                    }
                 }
+                MatrixD placingRotationMatrixInv = MatrixD.Invert(placingRotationMatrix);
 
                 if (m_hitInfo.HasValue)
                 {
-                    Vector3 hitInfoNormal = m_hitInfo.Value.HkHitInfo.Normal;
-                    Base6Directions.Direction closestDir = Base6Directions.GetClosestDirection(hitInfoNormal);
-                    Vector3I hitNormal = Base6Directions.GetIntVector(closestDir);
-                    addDir = hitNormal;
+                    Vector3 hitInfoNormal = Vector3.TransformNormal(m_hitInfo.Value.HkHitInfo.Normal,m_invGridWorldMatrix);
+                    addDir = Vector3I.Sign(Vector3.DominantAxisProjection(hitInfoNormal));
                 }
 
                 // Because intersection can be out of cube (on edges) then we must clamp intersection inside (we need that created block will touch side not edge with target block)
+                // Calculated in local intersected object coordinates
                 Vector3 sideCenter = removePos + 0.5f * addDir;
                 Vector3 sideCenterToIntersectionExact = intersectionBlockExact - sideCenter;
                 const float clampSideValue = 0.495f;
@@ -3077,176 +2754,61 @@ namespace Sandbox.Game.Entities
                 Vector3D localIntersectionExact = sideCenter + sideCenterToIntersectionExact;
                 float smallToLarge = gridSize / CurrentGrid.GridSize;
                 // Note that there is 0.1 coef instead of 0.5 - because we need that small block is into large one when intersection is not on sides.
-                Vector3I addPosSmallOnLargeInt = Vector3I.Round((localIntersectionExact + 0.1f * smallToLarge * addDir - smallToLarge * Vector3.Half) / smallToLarge);
+                float moveAtNormal = MyFakes.ENABLE_VR_BUILDING ? 0.25f : 0.1f;
+                Vector3I addPosSmallOnLargeInt = Vector3I.Round((localIntersectionExact + moveAtNormal * smallToLarge * addDir - smallToLarge * Vector3.Half) / smallToLarge);
                 addPosSmallOnLarge = smallToLarge * addPosSmallOnLargeInt + smallToLarge * Vector3.Half;
             }
 
-            // Compound block - use its position.
-            if (result && !placingSmallGridOnLargeStatic && intersectedBlock != null && intersectedBlock.FatBlock is MyCompoundCubeBlock)
-            {
-                MyCompoundCubeBlock cmpCubeBlock = intersectedBlock.FatBlock as MyCompoundCubeBlock;
-                Quaternion quatOrientation = m_gizmo.SpaceDefault.LocalOrientation;
-                MyCubeBlockDefinition blockDefinition = CurrentBlockDefinition;
-                if (m_multiBlockCreationClipboard.IsActive)
-                {
-                    if (m_multiBlockCreationClipboard.PreviewGrids != null && m_multiBlockCreationClipboard.PreviewGrids.Count > 0)
-                    {
-                        MySlimBlock mainBlock = m_multiBlockCreationClipboard.PreviewGrids[0].GetCubeBlock(Vector3I.Zero);
-                        if (mainBlock != null)
-                        {
-                            if (mainBlock.FatBlock is MyCompoundCubeBlock)
-                            {
-                                MyCompoundCubeBlock compoundBlock = mainBlock.FatBlock as MyCompoundCubeBlock;
-                                if (compoundBlock.GetBlocksCount() > 0)
-                                {
-                                    var blockInCompound = compoundBlock.GetBlocks()[0];
-                                    if (!GetBlockDefinitionAndOrientationInMultiblock(intersectedBlock, ref quatOrientation, ref blockDefinition, blockInCompound))
-                                        return false;
-                                }
-                            }
-                            else
-                            {
-                                if (!GetBlockDefinitionAndOrientationInMultiblock(intersectedBlock, ref quatOrientation, ref blockDefinition, mainBlock))
-                                    return false;
-                            }
-                        }
-                    }
-                }
 
-                if (cmpCubeBlock.CanAddBlock(blockDefinition, new MyBlockOrientation(ref quatOrientation)) && CompoundEnabled)
-                {
-                    addPos = removePos;
-                }
-            }
-
-            if (MyFakes.ENABLE_MULTIBLOCKS && result && !placingSmallGridOnLargeStatic && removeBlocksInMultiBlock != null && removeBlock != null)
-            {
-                MyCompoundCubeBlock compound = removeBlock.FatBlock as MyCompoundCubeBlock;
-
-                if (CompoundEnabled || compound == null) 
-                {
-                    MySlimBlock refBlock = removeBlock;
-                    if (compound != null && compoundBlockId != null)
-                        refBlock = compound.GetBlock(compoundBlockId.Value);
-
-                    if (refBlock != null) 
-                    {
-                        MyFracturedBlock fracturedBlock = refBlock.FatBlock as MyFracturedBlock;
-                        if (fracturedBlock != null)
-                        {
-                            if (fracturedBlock.MultiBlocks != null) 
-                            {
-                                foreach (var mbpart in fracturedBlock.MultiBlocks)
-                                {
-                                    if (mbpart != null)
-                                    {
-                                        MyMultiBlockDefinition mbDef = MyDefinitionManager.Static.TryGetMultiBlockDefinition(mbpart.MultiBlockDefinition);
-                                        Debug.Assert(mbDef != null);
-                                        if (mbDef != null)
-                                            MyCubeGrid.GetBlocksInMultiBlock(refBlock.CubeGrid, refBlock.Position, mbDef, mbpart.MultiBlockId, removeBlocksInMultiBlock);
-                                    }
-                                }
-                            }
-                        }
-                        else
-                        {
-                            if (refBlock.IsMultiBlockPart)
-                                MyCubeGrid.GetBlocksInMultiBlock(refBlock.CubeGrid, refBlock.Position, refBlock.MultiBlockDefinition, refBlock.MultiBlockId, removeBlocksInMultiBlock);
-                        }
-                    }
-                }
-                else 
-                {
-                    m_tmpSlimBlocks.Clear();
-
-                    foreach (var blockInCompound in compound.GetBlocks(m_tmpSlimBlocks))
-                    {
-                        if (blockInCompound.IsMultiBlockPart)
-                            MyCubeGrid.GetBlocksInMultiBlock(blockInCompound.CubeGrid, blockInCompound.Position, blockInCompound.MultiBlockDefinition, blockInCompound.MultiBlockId, removeBlocksInMultiBlock);
-                    }
-
-                    m_tmpSlimBlocks.Clear();
-                }
-            }
 
             Debug.Assert(!result || addDir != Vector3I.Zero, "Direction vector cannot be zero");
             return result;
         }
 
-        /// <summary>
-        /// Returns block definition and orientation (relative to intersectedBlock's grid) of the given "blockInMultiblock".
-        /// </summary>
-        private static bool GetBlockDefinitionAndOrientationInMultiblock(MySlimBlock intersectedBlock, ref Quaternion quatOrientation, ref MyCubeBlockDefinition blockDefinition, MySlimBlock blockInMultiBlock)
+        protected virtual void PrepareBlocksToRemove()
         {
-            blockDefinition = blockInMultiBlock.BlockDefinition;
-
-            Matrix blockOrientationMatrix;
-            blockInMultiBlock.Orientation.GetMatrix(out blockOrientationMatrix);
-
-            Matrix rotationDelta = m_multiBlockCreationClipboard.GetRotationDeltaMatrixToHitGrid(intersectedBlock.CubeGrid);
-            Matrix multiBlockWorldOrientation = m_multiBlockCreationClipboard.PreviewGrids[0].WorldMatrix.GetOrientation() * rotationDelta;
-
-            Matrix blockWorldOrientationMatrix = blockOrientationMatrix * multiBlockWorldOrientation;
-            Matrix blockLocalGridOrientation = blockWorldOrientationMatrix * Matrix.Invert(intersectedBlock.CubeGrid.WorldMatrix.GetOrientation());
-            MyBlockOrientation orientation = new MyBlockOrientation(ref blockLocalGridOrientation);
-            if (orientation.IsValid)
-            {
-                orientation.GetQuaternion(out quatOrientation);
-                return true;
-            }
-
-            Debug.Fail("Wrong orientation");
-            return false;
-        }
-
-        protected virtual void Remove()
-        {
-            if (PlacingSmallGridOnLargeStatic)
-                return;
 
             m_tmpBlockPositionList.Clear();
             m_tmpCompoundBlockPositionIdList.Clear();
 
-            foreach (var gizmoSpace in m_gizmo.Spaces)
-            {
-                if (!gizmoSpace.Enabled)
-                    continue;
-
-                if (GridValid && gizmoSpace.m_removeBlock != null && (gizmoSpace.m_removeBlock.FatBlock == null || !gizmoSpace.m_removeBlock.FatBlock.IsSubBlock))
+                foreach (var gizmoSpace in m_gizmo.Spaces)
                 {
-                    if (gizmoSpace.m_removeBlocksInMultiBlock.Count > 0)
+                    if (!gizmoSpace.Enabled)
+                        continue;
+
+                    if (GridAndBlockValid && gizmoSpace.m_removeBlock != null && (gizmoSpace.m_removeBlock.FatBlock == null || !gizmoSpace.m_removeBlock.FatBlock.IsSubBlock))
                     {
-                        foreach (var tuple in gizmoSpace.m_removeBlocksInMultiBlock)
-                            RemoveBlock(tuple.Item1, tuple.Item2);
+                        Debug.Assert(CurrentGrid == gizmoSpace.m_removeBlock.CubeGrid);
+                        if (CurrentGrid == gizmoSpace.m_removeBlock.CubeGrid)
+                        {
+                            if (gizmoSpace.m_removeBlocksInMultiBlock.Count > 0)
+                            {
+                                foreach (var tuple in gizmoSpace.m_removeBlocksInMultiBlock)
+                                    RemoveBlock(tuple.Item1, tuple.Item2);
+                            }
+                            else
+                            {
+                                RemoveBlock(gizmoSpace.m_removeBlock, gizmoSpace.m_blockIdInCompound, checkExisting: true);
+                            }
+
+                            gizmoSpace.m_removeBlock = null;
+                            gizmoSpace.m_removeBlocksInMultiBlock.Clear();
+                        }
                     }
-
-                    RemoveBlock(gizmoSpace.m_removeBlock, gizmoSpace.m_blockIdInCompound, checkExisting: true);
-
-                    gizmoSpace.m_removeBlock = null;
-                    gizmoSpace.m_removeBlocksInMultiBlock.Clear();
                 }
             }
 
-            if (MultiBlockCreationIsActivated)
-            {
-                if (m_multiBlockCreationClipboard.RemoveBlocksInMultiBlock.Count > 0)
-                {
-                    foreach (var tuple in m_multiBlockCreationClipboard.RemoveBlocksInMultiBlock)
-                        RemoveBlock(tuple.Item1, tuple.Item2);
-                }
-
-                RemoveBlock(m_multiBlockCreationClipboard.RemoveBlock, CompoundEnabled ? m_multiBlockCreationClipboard.BlockIdInCompound : null, checkExisting: true);
-                
-                m_multiBlockCreationClipboard.RemoveBlock = null;
-                m_multiBlockCreationClipboard.RemoveBlocksInMultiBlock.Clear();
-            }
-
+        protected void Remove()
+        {
             if (m_tmpBlockPositionList.Count > 0 || m_tmpCompoundBlockPositionIdList.Count > 0)
             {
                 MyGuiAudio.PlaySound(MyGuiSounds.HudDeleteBlock);
 
                 if (m_tmpBlockPositionList.Count > 0)
+                {
                     CurrentGrid.RazeBlocks(m_tmpBlockPositionList);
+                    m_tmpBlockPositionList.Clear();
+                }
 
                 if (m_tmpCompoundBlockPositionIdList.Count > 0)
                     CurrentGrid.RazeBlockInCompoundBlock(m_tmpCompoundBlockPositionIdList);
@@ -3318,36 +2880,84 @@ namespace Sandbox.Game.Entities
             get { return m_symmetrySettingMode != MySymmetrySettingModeEnum.NoPlane; }
         }
 
+        /// <summary>
+        /// Indicates if cube block size is avaliable for current cube builder state.
+        /// </summary>
+        /// <param name="blockDef">Block definition to check for.</param>
+        /// <returns>True if it is avaliable.</returns>
+        public bool IsCubeSizeAvailable(MyCubeBlockDefinition blockDef)
+        {
+
+            if (blockDef == null)
+                return false;
+
+            if (!IsCubeSizeModesAvailable)
+                return true;
+
+            var group = MyDefinitionManager.Static.GetDefinitionGroup(blockDef.BlockPairName);
+
+            if (this.CubeBuilderState == null)
+                return true;
+
+            bool available = (this.CubeBuilderState.CubeSizeMode == MyCubeSize.Large && @group.Large != null && (@group.Large.Public || MyFakes.ENABLE_NON_PUBLIC_BLOCKS)) ||
+                            this.CubeBuilderState.CubeSizeMode == MyCubeSize.Small && @group.Small != null && (@group.Small.Public || MyFakes.ENABLE_NON_PUBLIC_BLOCKS);
+
+            return available;
+        }
+
         #endregion
 
         #region Update
 
         Vector3I? GetSingleMountPointNormal()
         {
-			if (CurrentBlockDefinition == null)
+            if (CurrentBlockDefinition == null)
                 return null;
 
-			var currentBlockMountPoints = CurrentBlockDefinition.GetBuildProgressModelMountPoints(1.0f);
-			if (currentBlockMountPoints == null || currentBlockMountPoints.Length == 0)
-				return null;
+            var currentBlockMountPoints = CurrentBlockDefinition.GetBuildProgressModelMountPoints(1.0f);
+            if (currentBlockMountPoints == null || currentBlockMountPoints.Length == 0)
+                return null;
 
-			var normal = currentBlockMountPoints[0].Normal;
+            var normal = currentBlockMountPoints[0].Normal;
+            if (m_alignToDefault)
+            {
+                m_alignToDefault = false;
+                for (int i = m_lastDefault; i < currentBlockMountPoints.Length + m_lastDefault; i++)
+                {
+                    int index = i % currentBlockMountPoints.Length;
+                    if (currentBlockMountPoints[index].Default)
+                    {
+                        m_lastDefault = index;
+                        return currentBlockMountPoints[index].Normal;
+                    }
+                }
+                for (int i = m_lastDefault; i < currentBlockMountPoints.Length + m_lastDefault; i++)
+                {
+                    int index = i % currentBlockMountPoints.Length;
+                    if (MyCubeBlockDefinition.NormalToBlockSide(currentBlockMountPoints[index].Normal) == BlockSideEnum.Bottom)
+                    {
+                        m_lastDefault = index;
+                        return currentBlockMountPoints[index].Normal;
+                    }
+                }
+            }
+
             var oppositeNormal = -normal;
             switch (CurrentBlockDefinition.AutorotateMode)
             {
                 case MyAutorotateMode.OneDirection:
-					for (int i = 1; i < currentBlockMountPoints.Length; i++)
+                    for (int i = 1; i < currentBlockMountPoints.Length; i++)
                     {
-						var currentNormal = currentBlockMountPoints[i].Normal;
+                        var currentNormal = currentBlockMountPoints[i].Normal;
                         if (currentNormal != normal)
                             return null;
                     }
                     break;
 
                 case MyAutorotateMode.OppositeDirections:
-					for (int i = 1; i < currentBlockMountPoints.Length; i++)
+                    for (int i = 1; i < currentBlockMountPoints.Length; i++)
                     {
-						var currentNormal = currentBlockMountPoints[i].Normal;
+                        var currentNormal = currentBlockMountPoints[i].Normal;
                         if (currentNormal != normal && currentNormal != oppositeNormal)
                             return null;
                     }
@@ -3364,104 +2974,65 @@ namespace Sandbox.Game.Entities
             return normal;
         }
 
+        protected void CalculateLocalCoordAndMode()
+        {
+            Vector3D freePlacementIntersectionPoint = IntersectionStart + IntersectionDistance * IntersectionDirection;
+
+            if (!IsActivated || CurrentBlockDefinition == null)
+            {
+                return;
+            }
+
+            ChooseHitObject();
+
+            if (m_hitInfo != null)
+                freePlacementIntersectionPoint = m_hitInfo.Value.Position;
+
+            float gridSize = 0;
+            if (CurrentBlockDefinition != null)
+                gridSize = MyDefinitionManager.Static.GetCubeSize(CurrentBlockDefinition.CubeSize);
+
+            m_lastLocalCoordSysData = MyCoordinateSystem.Static.SnapWorldPosToClosestGrid(ref freePlacementIntersectionPoint, gridSize, CubeBuilderDefinition.BuildingSettings.StaticGridAlignToCenter);
+            // Blocks should snap to local coordinates if Voxel is hit.
+            bool snapToLocalCoords = CurrentVoxelBase != null && MyCoordinateSystem.Static.LocalCoordExist;
+
+            bool dynamicOverride = IsDynamicOverride();
+
+            // Dynamic mode if no possible way to snap to local coords and no grid is hit.
+            DynamicMode = !snapToLocalCoords && CurrentGrid == null || dynamicOverride;
+        }
+
         public override void UpdateBeforeSimulation()
         {
             ProfilerShort.Begin("Setup");
-            var normal = GetSingleMountPointNormal();
-            // Gizmo add dir can be zero in some cases
-            if (normal.HasValue && CurrentGrid != null && m_gizmo.SpaceDefault.m_addDir != Vector3I.Zero)
-            {
-                m_gizmo.SetupLocalAddMatrix(m_gizmo.SpaceDefault, normal.Value);
-            }
+            //var normal = GetSingleMountPointNormal();
+            //// Gizmo add dir can be zero in some cases
+            //if (normal.HasValue && (GridAndBlockValid || VoxelMapAndBlockValid) && m_gizmo.SpaceDefault.m_addDir != Vector3I.Zero) //TODO: do something with it
+            //{
+            //    m_gizmo.SetupLocalAddMatrix(m_gizmo.SpaceDefault, normal.Value);
+            //}
             UpdateNotificationBlockNotAvailable(changeText: false);
 
-            if (m_clipboard.IsActive && m_shipCreationClipboard.IsActive)
+            ProfilerShort.End();
+
+            if (MyCubeBuilder.Static.IsActivated && MySession.Static.ControlledEntity is MyShipController)
             {
-                m_clipboard.Deactivate();
-                UpdatePasteNotification(MySpaceTexts.CubeBuilderPasteNotification);
-            }
-            ProfilerShort.End();
-
-            ProfilerShort.Begin("m_clipboard.Update");
-            m_clipboard.Update();
-            ProfilerShort.End();
-
-            ProfilerShort.Begin("m_floatingObjectClipboard.Update");
-            m_floatingObjectClipboard.Update();
-            ProfilerShort.End();
-
-            ProfilerShort.Begin("m_voxelClipboard.Update");
-            m_voxelClipboard.Update();
-            ProfilerShort.End();
-
-            ProfilerShort.Begin("m_shipCreationClipboard.Update");
-            m_shipCreationClipboard.Update();
-            ProfilerShort.End();
-
-            ProfilerShort.Begin("m_multiBlockCreationClipboard.Update");
-            m_multiBlockCreationClipboard.Update();
-            ProfilerShort.End();
-
-            ProfilerShort.Begin("ClipboardActive");
-            if (m_clipboard.IsActive || m_floatingObjectClipboard.IsActive || m_voxelClipboard.IsActive || m_shipCreationClipboard.IsActive)
-            {
-                m_collisionTestPoints.Clear();
-                PrepareCharacterCollisionPoints(m_collisionTestPoints);
-
-                bool hideClipboards = MySession.ControlledEntity is MyCockpit;
-                if (MySession.GetCameraControllerEnum() == MyCameraControllerEnum.Spectator)
+                if ((MySession.Static.ControlledEntity as MyShipController).hasPower && (MySession.Static.ControlledEntity as MyShipController).BuildingMode)
                 {
-                    if (!MyInput.Static.ENABLE_DEVELOPER_KEYS && MySession.Static.Settings.EnableSpectator)
-                        hideClipboards &= true;
-                    else
-                        hideClipboards &= false;
+                    MyCubeBuilder.Static.canBuild = true;
                 }
-
-                if (!MyFakes.ENABLE_ADVANCED_CLIPBOARD)
+                else
                 {
-                    if (m_clipboard.IsActive)
-                    {
-                        if (hideClipboards)
-                            m_clipboard.Hide();
-                        else
-                        {
-                            m_clipboard.Show();
-                            m_clipboard.HideWhenColliding(m_collisionTestPoints);
-                        }
-                    }
-                }
-
-                if (m_floatingObjectClipboard.IsActive)
-                {
-                    if (hideClipboards)
-                        m_floatingObjectClipboard.Hide();
-                    else
-                    {
-                        m_floatingObjectClipboard.Show();
-                        m_floatingObjectClipboard.HideWhenColliding(m_collisionTestPoints);
-                    }
-                }
-
-                if (m_voxelClipboard.IsActive)
-                {
-                    if (hideClipboards)
-                        m_voxelClipboard.Hide();
-                    else
-                        m_voxelClipboard.Show();
-                }
-
-                if (m_shipCreationClipboard.IsActive)
-                {
-                    if (hideClipboards)
-                        m_shipCreationClipboard.Hide();
-                    else
-                    {
-                        m_shipCreationClipboard.Show();
-                        m_shipCreationClipboard.HideWhenColliding(m_collisionTestPoints);
-                    }
+                    MyCubeBuilder.Static.canBuild = false;
                 }
             }
-            ProfilerShort.End();
+            else
+            {
+                MyCubeBuilder.Static.canBuild = true;
+            }
+
+            this.CalculateLocalCoordAndMode();
+
         }
 
         protected override void UnloadData()
@@ -3472,15 +3043,11 @@ namespace Sandbox.Game.Entities
 
             m_gizmo.Clear();
 
-            m_clipboard.Deactivate();
-            m_floatingObjectClipboard.Deactivate();
-            m_voxelClipboard.Deactivate();
-            m_shipCreationClipboard.Deactivate();
-            m_multiBlockCreationClipboard.Deactivate();
-
             CurrentGrid = null;
 
             UnloadRenderObjects();
+
+            m_cubeBuildlerState = null;
         }
 
         void UnloadRenderObjects()
@@ -3495,8 +3062,8 @@ namespace Sandbox.Game.Entities
             if (!MyFakes.ENABLE_NOTIFICATION_BLOCK_NOT_AVAILABLE)
                 return;
 
-            bool developerSpectatorBuild = MySession.GetCameraControllerEnum() == MyCameraControllerEnum.Spectator && !MyFinalBuildConstants.IS_OFFICIAL;
-            bool hideNotificationInCockpit = MySession.ControlledEntity != null && MySession.ControlledEntity is MyCockpit && !developerSpectatorBuild;
+            bool developerSpectatorBuild = MySession.Static.GetCameraControllerEnum() == MyCameraControllerEnum.Spectator && !MyFinalBuildConstants.IS_OFFICIAL;
+            bool hideNotificationInCockpit = MySession.Static.ControlledEntity != null && MySession.Static.ControlledEntity is MyCockpit && !developerSpectatorBuild;
 
             if (BlockCreationIsActivated && CurrentGrid != null && CurrentBlockDefinition != null && CurrentBlockDefinition.CubeSize != CurrentGrid.GridSizeEnum && !hideNotificationInCockpit
                 && !PlacingSmallGridOnLargeStatic)
@@ -3513,10 +3080,11 @@ namespace Sandbox.Game.Entities
                     MyHud.Notifications.Add(m_blockNotAvailableNotification);
                 }
             }
-            else
+            else if(CurrentBlockDefinition != null)
             {
                 HideNotificationBlockNotAvailable();
             }
+
         }
 
         /// <summary>
@@ -3543,7 +3111,7 @@ namespace Sandbox.Game.Entities
 
         #region Continuous building
 
-        protected virtual void StartBuilding()
+        public virtual void StartBuilding()
         {
             StartBuilding(ref m_gizmo.SpaceDefault.m_startBuild, m_gizmo.SpaceDefault.m_startRemove);
         }
@@ -3553,7 +3121,7 @@ namespace Sandbox.Game.Entities
         /// </summary>
         protected void StartBuilding(ref Vector3I? startBuild, Vector3I? startRemove)
         {
-            if ((!GridAndBlockValid && !VoxelMapAndBlockValid) || PlacingSmallGridOnLargeStatic || MyEntities.MemoryLimitReachedReport || MySession.Static.SimpleSurvival)
+            if ((!GridAndBlockValid && !VoxelMapAndBlockValid) || PlacingSmallGridOnLargeStatic || MyEntities.MemoryLimitReachedReport)
                 return;
 
             Vector3I addPos;
@@ -3582,7 +3150,7 @@ namespace Sandbox.Game.Entities
         /// </summary>
         protected void StartRemoving(Vector3I? startBuild, ref Vector3I? startRemove)
         {
-            if (PlacingSmallGridOnLargeStatic || MySession.Static.SimpleSurvival)
+            if (PlacingSmallGridOnLargeStatic)
                 return;
 
             m_initialIntersectionStart = IntersectionStart;
@@ -3594,7 +3162,7 @@ namespace Sandbox.Game.Entities
             }
         }
 
-        protected virtual void ContinueBuilding(bool planeBuild)
+        public virtual void ContinueBuilding(bool planeBuild)
         {
             var defaulGizmoSpace = m_gizmo.SpaceDefault;
             ContinueBuilding(planeBuild, defaulGizmoSpace.m_startBuild, defaulGizmoSpace.m_startRemove, ref defaulGizmoSpace.m_continueBuild, defaulGizmoSpace.m_min, defaulGizmoSpace.m_max);
@@ -3715,9 +3283,9 @@ namespace Sandbox.Game.Entities
                     }
         }
 
-        protected virtual void StopBuilding()
+        public virtual void StopBuilding()
         {
-            if ((!GridAndBlockValid && !VoxelMapAndBlockValid && !MultiBlockCreationIsActivated) || MyEntities.MemoryLimitReachedReport)
+            if ((!GridAndBlockValid && !VoxelMapAndBlockValid) || MyEntities.MemoryLimitReachedReport)
             {
                 foreach (var gizmoSpace in m_gizmo.Spaces)
                 {
@@ -3753,7 +3321,7 @@ namespace Sandbox.Game.Entities
 
             if (m_blocksBuildQueue.Count > 0)
             {
-                CurrentGrid.BuildBlocks(MyPlayer.SelectedColor, m_blocksBuildQueue, MySession.LocalCharacterEntityId);
+                CurrentGrid.BuildBlocks(MyPlayer.SelectedColor, m_blocksBuildQueue, MySession.Static.LocalCharacterEntityId, MySession.Static.LocalPlayerId);
                 m_blocksBuildQueue.Clear();
             }
 
@@ -3762,8 +3330,6 @@ namespace Sandbox.Game.Entities
                 CurrentGrid.RazeBlocks(m_tmpBlockPositionList);
                 m_tmpBlockPositionList.Clear();
             }
-
-            HideStationRotationNotification();
         }
 
         /// <summary>
@@ -3774,7 +3340,6 @@ namespace Sandbox.Game.Entities
         {
             if (startBuild != null && (continueBuild != null || smallViewChange))
             {
-                Vector3I gridPos = startBuild.Value;
                 Vector3I min = blockMinPosition - blockCenterPosition;
                 Vector3I max = blockMaxPosition - blockCenterPosition;
 
@@ -3839,9 +3404,13 @@ namespace Sandbox.Game.Entities
                                 }
 
                                 m_blocksBuildQueue.Add(new MyCubeGrid.MyBlockLocation(blockDefinition.Id, tempMin, tempMax, tempCenter, tempOrientation,
-                                    MyEntityIdentifier.AllocateId(), MySession.LocalPlayerId));
+                                    MyEntityIdentifier.AllocateId(), MySession.Static.LocalPlayerId));
                             }
                         }
+                    }
+                    if (m_blocksBuildQueue.Count > 0)
+                    {
+                        MyGuiAudio.PlaySound(MyGuiSounds.HudPlaceBlock);
                     }
                 }
                 else
@@ -3858,10 +3427,7 @@ namespace Sandbox.Game.Entities
                     area.DefinitionId = definitionId;
                     area.ColorMaskHSV = MyPlayer.SelectedColor.PackHSVToUint();
 
-                    CurrentGrid.BuildBlocks(MySession.LocalPlayerId, ref area);
-
-                    // TODO: There will be message send instead of this, this will called and iterated after message success
-                    //BuildByGizmo(ref min, ref max, ref stepDelta, ref counter, ref centerPos, ref orientation, ref definitionId);
+                    CurrentGrid.BuildBlocks(ref area, MySession.Static.LocalCharacterEntityId, MySession.Static.LocalPlayerId);
                 }
             }
             else if (startRemove != null && (continueBuild != null || smallViewChange))
@@ -3908,34 +3474,6 @@ namespace Sandbox.Game.Entities
             return (m_gizmo.SpaceDefault.m_startBuild != null || m_gizmo.SpaceDefault.m_startRemove != null);
         }
 
-        // CH: At the time of writing this comment, this is not called anywhere (only one commented out occurence). If you want to use it, it's up to you to make it work :-)
-        /*
-        private void BuildByGizmo(ref Vector3I blockMin, ref Vector3I blockMax, ref Vector3I stepDelta, ref Vector3I buildAreaSize, ref Vector3I posInGrid, ref Quaternion orientation, ref MyDefinitionId definitionId)
-        {
-            Vector3I offset = Vector3I.Zero;
-            for (int i = 0; i < buildAreaSize.X; i += 1, offset.X += stepDelta.X)
-            {
-                offset.Y = 0;
-                for (int j = 0; j < buildAreaSize.Y; j += 1, offset.Y += stepDelta.Y)
-                {
-                    offset.Z = 0;
-                    for (int k = 0; k < buildAreaSize.Z; k += 1, offset.Z += stepDelta.Z)
-                    {
-                        Vector3I gridPosIt = posInGrid + offset;// +gizmoSpace.m_mirroringOffset;
-                        Vector3I minIt = gridPosIt + blockMin;
-                        Vector3I maxIt = gridPosIt + blockMax;
-
-                        // Early out
-                        if (CurrentGrid.CanPlaceBlock(minIt, maxIt))
-                        {
-                            m_blocksBuildQueue.Add(new MyCubeGrid.MyBlockLocation(definitionId, minIt, maxIt, gridPosIt, orientation, MyEntityIdentifier.AllocateId(), MySession.Player.PlayerId));
-                        }
-                    }
-                }
-            }
-        }
-        */
-
         protected bool CheckSmallViewChange()
         {
             float viewChangeCos = Vector3.Dot(m_initialIntersectionDirection, IntersectionDirection);
@@ -3947,44 +3485,16 @@ namespace Sandbox.Game.Entities
 
         #region Draw
 
-        protected internal override void ChoosePlacementObject()
+        protected internal override void ChooseHitObject()
         {
             if (IsBuilding())
                 return;
 
-            base.ChoosePlacementObject();
 
-            if (CurrentGrid != null && CurrentBlockDefinition != null && CurrentBlockDefinition.CubeSize != CurrentGrid.GridSizeEnum && !m_shipCreationClipboard.IsActive)
-            {
-                ChooseComplementBlock();
-            }
-        }
+            
+            base.ChooseHitObject();
 
-        /// <summary>
-        /// Chooses same cube but for different grid size
-        /// </summary>
-        void ChooseComplementBlock()
-        {
-            var oldBlock = m_definitionWithVariants;
-
-            if (oldBlock != null)
-            {
-                var group = MyDefinitionManager.Static.GetDefinitionGroup(oldBlock.Base.BlockPairName);
-                if (oldBlock.Base.CubeSize == MyCubeSize.Small)
-                {
-                    if (group.Large != null && (group.Large.Public || MyFakes.ENABLE_NON_PUBLIC_BLOCKS))
-                    {
-                        CurrentBlockDefinition = group.Large;
-                    }
-                }
-                else if (oldBlock.Base.CubeSize == MyCubeSize.Large)
-                {
-                    if (group.Small != null && (group.Small.Public || MyFakes.ENABLE_NON_PUBLIC_BLOCKS))
-                    {
-                        CurrentBlockDefinition = group.Small;
-                    }
-                }
-            }
+            m_gizmo.Clear();
         }
 
         private Vector3D GetFreeSpacePlacementPosition(out bool valid)
@@ -4005,7 +3515,7 @@ namespace Sandbox.Game.Entities
 
             try
             {
-                float? dist = MyPhysics.CastShape(rayEnd, shape, ref matrix, MyPhysics.CollisionLayerWithoutCharacter);
+                float? dist = MyPhysics.CastShape(rayEnd, shape, ref matrix, MyPhysics.CollisionLayers.CollisionLayerWithoutCharacter);
                 if (dist.HasValue && dist.Value != 0f)
                 {
                     Vector3D intersectionPoint = rayStart + dist.Value * (rayEnd - rayStart);
@@ -4020,7 +3530,7 @@ namespace Sandbox.Game.Entities
                     }
 
                     Vector3D startToIntersection = intersectionPoint - IntersectionStart;
-                    distance = startToIntersection.Length();
+                    distance = startToIntersection.Length() * 0.98;
 
                     valid = true;
                 }
@@ -4067,13 +3577,16 @@ namespace Sandbox.Game.Entities
 			/*if (MyFakes.ENABLE_SIMPLE_SURVIVAL)
 				return;*/
 
-            var block = MyCubeBuilder.Static.HudBlockDefinition;
+            var block = MyCubeBuilder.Static.CurrentBlockDefinition;
             if (block == null || !MyCubeBuilder.Static.IsActivated)
             {
                 return;
             }
 
-            MyHud.BlockInfo.LoadDefinition(block, MyCubeBuilder.BuildComponent.TotalMaterials);
+            if (!MyFakes.ENABLE_SMALL_GRID_BLOCK_INFO && block != null && block.CubeSize == MyCubeSize.Small)
+                return;
+
+            MySlimBlock.SetBlockComponents(MyHud.BlockInfo, block, MyCubeBuilder.BuildComponent.GetBuilderInventory(MySession.Static.LocalCharacter));
             MyHud.BlockInfo.Visible = true;
             return;
         }
@@ -4081,174 +3594,11 @@ namespace Sandbox.Game.Entities
 
         #endregion
 
-        #region Copy/Cut/Paste
-
-        private void UpdatePasteNotification(MyStringId myTextsWrapperEnum)
-        {
-            RemovePasteNotification();
-
-            if (m_clipboard.IsActive)
-            {
-                m_pasteNotification = new MyHudNotification(myTextsWrapperEnum, 0, level: MyNotificationLevel.Control);
-                MyHud.Notifications.Add(m_pasteNotification);
-            }
-        }
-
-        private void RemovePasteNotification()
-        {
-            if (m_pasteNotification != null)
-            {
-                MyHud.Notifications.Remove(m_pasteNotification);
-                m_pasteNotification = null;
-            }
-        }
-
-        private void OnCutConfirm(MyCubeGrid targetGrid, bool cutGroup)
-        {
-            Debug.Assert(targetGrid != null);
-
-            //Check if entity wasn't deleted by someone else during waiting
-            if (MyEntities.EntityExists(targetGrid.EntityId))
-            {
-                DeactivateCopyPasteVoxel(true);
-                DeactivateCopyPasteFloatingObject(true);
-                if (cutGroup)
-                    m_clipboard.CutGroup(targetGrid);
-                else
-                    m_clipboard.CutGrid(targetGrid);
-            }
-        }
-
-        private void OnCutAsteroidConfirm(MyVoxelMap targetVoxelMap)
-        {
-            Debug.Assert(targetVoxelMap != null);
-
-            //Check if entity wasn't deleted by someone else during waiting
-            if (MyEntities.EntityExists(targetVoxelMap.EntityId))
-            {
-                DeactivateCopyPaste(true);
-                DeactivateCopyPasteFloatingObject(true);
-                targetVoxelMap.SyncObject.SendCloseRequest();
-            }
-        }
-
-        private void OnCutFloatingObjectConfirm(MyFloatingObject floatingObj)
-        {
-            Debug.Assert(floatingObj != null);
-
-            if (MyEntities.Exist(floatingObj))
-            {
-                DeactivateCopyPasteVoxel(true);
-                DeactivateCopyPaste(true);
-                m_floatingObjectClipboard.CutFloatingObject(floatingObj);
-            }
-        }
-
-        public void DeactivateCopyPasteVoxel(bool clear = false)
-        {
-            if (m_voxelClipboard.IsActive)
-                m_voxelClipboard.Deactivate();
-
-            RemovePasteNotification();
-
-            if (clear)
-                m_voxelClipboard.ClearClipboard();
-        }
-
-        public void DeactivateCopyPasteFloatingObject(bool clear = false)
-        {
-            if (m_floatingObjectClipboard.IsActive)
-                m_floatingObjectClipboard.Deactivate();
-
-            RemovePasteNotification();
-
-            if (clear)
-                m_floatingObjectClipboard.ClearClipboard();
-        }
-
-        public void DeactivateCopyPaste(bool clear = false)
-        {
-            if (m_clipboard.IsActive)
-                m_clipboard.Deactivate();
-
-            RemovePasteNotification();
-
-            if (clear)
-                m_clipboard.ClearClipboard();
-        }
-
-        public void ActivateVoxelClipboard(MyObjectBuilder_VoxelMap voxelMap, IMyStorage storage, Vector3 centerDeltaDirection, float dragVectorLength)
-        {
-            if (m_shipCreationClipboard.IsActive)
-                return;
-
-            MySessionComponentVoxelHand.Static.Enabled = false;
-            DeactivateMultiBlockClipboard();
-            m_voxelClipboard.SetVoxelMapFromBuilder(voxelMap, storage, centerDeltaDirection, dragVectorLength);
-        }
-
-        public void ActivateFloatingObjectClipboard(MyObjectBuilder_FloatingObject floatingObject, Vector3 centerDeltaDirection, float dragVectorLength)
-        {
-            if (m_shipCreationClipboard.IsActive)
-                return;
-
-            MySessionComponentVoxelHand.Static.Enabled = false;
-            DeactivateMultiBlockClipboard();
-            m_floatingObjectClipboard.SetFloatingObjectFromBuilder(floatingObject, centerDeltaDirection, dragVectorLength);
-        }
-
-        public void ActivateShipCreationClipboard(MyObjectBuilder_CubeGrid grid, Vector3 centerDeltaDirection, float dragVectorLength)
-        {
-            if (m_shipCreationClipboard.IsActive)
-                return;
-
-            MySessionComponentVoxelHand.Static.Enabled = false;
-            DeactivateMultiBlockClipboard();
-            m_shipCreationClipboard.SetGridFromBuilder(grid, centerDeltaDirection, dragVectorLength);
-        }
-
-        private void ActivateMultiBlockCreationClipboard(MyMultiBlockDefinition multiBlockDefinition, MyObjectBuilder_CubeGrid grid, Vector3 centerDeltaDirection, float dragVectorLength)
-        {
-            if (m_multiBlockCreationClipboard.IsActive)
-                return;
-
-            MySessionComponentVoxelHand.Static.Enabled = false;
-            m_multiBlockCreationClipboard.SetGridFromBuilder(multiBlockDefinition, grid, centerDeltaDirection, dragVectorLength);
-        }
-
-        public void ActivateShipCreationClipboard(MyObjectBuilder_CubeGrid[] grids, Vector3 centerDeltaDirection, float dragVectorLength)
-        {
-            if (m_shipCreationClipboard.IsActive)
-                return;
-
-            MySessionComponentVoxelHand.Static.Enabled = false;
-            DeactivateMultiBlockClipboard();
-            m_shipCreationClipboard.SetGridFromBuilders(grids, centerDeltaDirection, dragVectorLength);
-        }
-
-        public void DeactivateShipCreationClipboard()
-        {
-            if (!m_shipCreationClipboard.IsActive)
-                return;
-
-            m_shipCreationClipboard.Deactivate();
-        }
-
-        private void DeactivateMultiBlockClipboard()
-        {
-            if (!m_multiBlockCreationClipboard.IsActive)
-                return;
-
-            m_multiBlockCreationClipboard.Deactivate();
-        }
-
-        #endregion
-
         #region Grid creation
 
         public void StartNewGridPlacement(MyCubeSize cubeSize, bool isStatic)
         {
-            var character = MySession.LocalCharacter;
+            var character = MySession.Static.LocalCharacter;
             if (character != null)
             {
                 character.SwitchToWeapon(null);
@@ -4259,19 +3609,9 @@ namespace Sandbox.Game.Entities
             if (prefabName == null)
                 return;
             var gridBuilders = MyPrefabManager.Static.GetGridPrefab(prefabName);
-            Debug.Assert(gridBuilders != null && gridBuilders.Count() > 0);
-            if (gridBuilders == null || gridBuilders.Count() == 0)
+            Debug.Assert(gridBuilders != null && gridBuilders.Length > 0);
+            if (gridBuilders == null || gridBuilders.Length == 0)
                 return;
-
-            var blockDefinition = MyDefinitionManager.Static.GetCubeBlockDefinition(gridBuilders[0].CubeBlocks.First().GetId());
-            var sizeInMeters = MyDefinitionManager.Static.GetCubeSize(cubeSize);
-            Vector3 blockDiagonal = new Vector3(blockDefinition.Size) * sizeInMeters;
-
-            Vector3 centerDisplacement;
-            if (isStatic)
-                centerDisplacement = Vector3.Zero;
-            else
-                centerDisplacement = new Vector3(0.0f, 0.55f, -1.0f) * sizeInMeters;
 
             foreach (var gridBuilder in gridBuilders)
             {
@@ -4284,37 +3624,9 @@ namespace Sandbox.Game.Entities
 					blockBuilder.ColorMaskHSV = MyPlayer.SelectedColor;
                 }
             }
+                }
 
-            MyCubeBuilder.Static.ActivateShipCreationClipboard(gridBuilders, centerDisplacement, 5.0f + blockDiagonal.Length() * 0.5f);
-
-            if (isStatic)
-            {
-                ShowStationRotationNotification();
-            }
-            else
-            {
-                HideStationRotationNotification();
-            }
-        }
-
-        public static MyObjectBuilder_CubeGrid CreateBlockGridBuilder(MyCubeBlockDefinition blockDefinition, Matrix rotationMatrix, bool isStatic)
-        {
-            var gridBuilder = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_CubeGrid>();
-            gridBuilder.PositionAndOrientation = new MyPositionAndOrientation(Vector3.Zero, Vector3.Forward, Vector3.Up);
-            gridBuilder.GridSizeEnum = blockDefinition.CubeSize;
-            gridBuilder.IsStatic = isStatic;
-            gridBuilder.PersistentFlags |= MyPersistentEntityFlags2.Enabled | MyPersistentEntityFlags2.InScene;
-
-            var blockBuilder = MyObjectBuilderSerializer.CreateNewObject(blockDefinition.Id) as MyObjectBuilder_CubeBlock;
-            blockBuilder.Orientation = Quaternion.CreateFromForwardUp(Vector3I.Forward, Vector3I.Up);
-			blockBuilder.ColorMaskHSV = MyPlayer.SelectedColor;
-
-            gridBuilder.CubeBlocks.Add(blockBuilder);
-
-            return gridBuilder;
-        }
-
-        public static MyObjectBuilder_CubeGrid CreateMultiBlockGridBuilder(MyMultiBlockDefinition multiCubeBlockDefinition, Matrix rotationMatrix, Vector3D position = default(Vector3D))
+        protected static MyObjectBuilder_CubeGrid CreateMultiBlockGridBuilder(MyMultiBlockDefinition multiCubeBlockDefinition, Matrix rotationMatrix, Vector3D position = default(Vector3D))
         {
             Debug.Assert(MyFakes.ENABLE_MULTIBLOCKS);
 
@@ -4334,9 +3646,13 @@ namespace Sandbox.Game.Entities
             Vector3I max = Vector3I.MinValue;
 
             int multiblockId = MyRandom.Instance.Next();
+            while (multiblockId == 0)
+                multiblockId = MyRandom.Instance.Next();
 
-            foreach (var multiBlockPartDefinition in multiCubeBlockDefinition.BlockDefinitions)
+            for (int i = 0; i < multiCubeBlockDefinition.BlockDefinitions.Length; ++i)
             {
+                var multiBlockPartDefinition = multiCubeBlockDefinition.BlockDefinitions[i];
+
                 MyCubeBlockDefinition blockDefinition;
                 MyDefinitionManager.Static.TryGetCubeBlockDefinition(multiBlockPartDefinition.Id, out blockDefinition);
                 if (blockDefinition == null)
@@ -4357,17 +3673,19 @@ namespace Sandbox.Game.Entities
 
                 MyObjectBuilder_CubeBlock blockBuilder = MyObjectBuilderSerializer.CreateNewObject(blockDefinition.Id) as MyObjectBuilder_CubeBlock;
                 blockBuilder.Orientation = Base6Directions.GetOrientation(multiBlockPartDefinition.Forward, multiBlockPartDefinition.Up);
-                blockBuilder.Min = multiBlockPartDefinition.Position;
-				blockBuilder.ColorMaskHSV = MyPlayer.SelectedColor;
+                blockBuilder.Min = multiBlockPartDefinition.Min;
+                blockBuilder.ColorMaskHSV = MyPlayer.SelectedColor;
                 blockBuilder.MultiBlockId = multiblockId;
+                blockBuilder.MultiBlockIndex = i;
                 blockBuilder.MultiBlockDefinition = multiCubeBlockDefinition.Id;
+                blockBuilder.EntityId = MyEntityIdentifier.AllocateId();
 
                 // Check block on existing position
                 bool added = false;
                 {
                     bool canBeAdded = true;
 
-                    bool isValidCompound = blockDefinition.CompoundTemplates != null && blockDefinition.CompoundTemplates.Length > 0;
+                    bool isValidCompound = MyCompoundCubeBlock.IsCompoundEnabled(blockDefinition);
                     // Find out existing multiblock
                     foreach (var existingBlock in gridBuilder.CubeBlocks)
                     {
@@ -4408,7 +3726,7 @@ namespace Sandbox.Game.Entities
                 if (!added)
                 {
                     // Compound block
-                    if (MyFakes.ENABLE_COMPOUND_BLOCKS && blockDefinition.CompoundTemplates != null && blockDefinition.CompoundTemplates.Length > 0)
+                    if (MyFakes.ENABLE_COMPOUND_BLOCKS && MyCompoundCubeBlock.IsCompoundEnabled(blockDefinition))
                     {
                         MyObjectBuilder_CompoundCubeBlock compoundCBBuilder = MyCompoundCubeBlock.CreateBuilder(blockBuilder);
                         gridBuilder.CubeBlocks.Add(compoundCBBuilder);
@@ -4419,8 +3737,8 @@ namespace Sandbox.Game.Entities
                     }
                 }
 
-                min = Vector3I.Min(min, multiBlockPartDefinition.Position);
-                max = Vector3I.Max(max, multiBlockPartDefinition.Position);
+                min = Vector3I.Min(min, multiBlockPartDefinition.Min);
+                max = Vector3I.Max(max, multiBlockPartDefinition.Min);
             }
 
             if (gridBuilder.CubeBlocks.Count == 0)
@@ -4431,37 +3749,10 @@ namespace Sandbox.Game.Entities
 
             gridBuilder.GridSizeEnum = cubeSize.Value;
 
-            var blockSizeInMeters = MyDefinitionManager.Static.GetCubeSize(cubeSize.Value);
-            Vector3 gridSizeInMeters = (max - min + Vector3I.One) * blockSizeInMeters;
-
             return gridBuilder;
         }
 
-        public void StartNewGridPlacement(MyMultiBlockDefinition multiBlockDefinition, Matrix rotationMatrix)
-        {
-            var gridBuilder = CreateMultiBlockGridBuilder(multiBlockDefinition, rotationMatrix);
-            if (gridBuilder != null)
-                ActivateMultiBlockCreationClipboard(multiBlockDefinition, gridBuilder, Vector3.Zero, IntersectionDistance);
-        }
-
-        public static MyCubeGrid SpawnGrid(MyCubeBlockDefinition definition, MatrixD worldMatrix, MyEntity builder, bool isStatic)
-        {
-            Debug.Assert(Sync.IsServer);
-            MyCubeGrid grid = null;
-            if (isStatic)
-                grid = SpawnStaticGrid(definition, builder, worldMatrix);
-            else
-                grid = SpawnDynamicGrid(definition, builder, worldMatrix);
-
-            if (grid != null)
-            {
-                MySyncCreate.SendAfterGridBuilt(builder == null ? 0 : builder.EntityId, grid.EntityId);
-                AfterGridBuild(builder, grid);
-            }
-            return grid;
-        }
-
-        public static void AfterGridBuild(MyEntity builder, MyCubeGrid grid)
+        protected static void AfterGridBuild(MyEntity builder, MyCubeGrid grid, bool instantBuild)
         {
             if (grid != null)
             {
@@ -4486,60 +3777,79 @@ namespace Sandbox.Game.Entities
 
                         mainGrid.AdditionalModelGenerators.ForEach(g => g.UpdateAfterGridSpawn(mainBlock));
 
-                        if (MyFakes.ENABLE_SMALL_BLOCK_TO_LARGE_STATIC_CONNECTIONS)
+                        if (MyCubeGridSmallToLargeConnection.Static != null)
                         {
-                            if (!MyCubeGridSmallToLargeConnection.Static.AddBlockSmallToLargeConnection(block) && grid.GridSizeEnum == MyCubeSize.Small)
+                            if (Sync.IsServer && !MyCubeGridSmallToLargeConnection.Static.AddBlockSmallToLargeConnection(block) && grid.GridSizeEnum == MyCubeSize.Small)
                                 block.CubeGrid.TestDynamic = true;
                         }
                     }
 
                     if (Sync.IsServer)
                     {
-                        MyCubeBuilder.BuildComponent.AfterGridCreated(grid, builder);
+                        MyCubeBuilder.BuildComponent.AfterSuccessfulBuild(builder, instantBuild);
                     }
+
+                    if (block.FatBlock != null)
+                        block.FatBlock.OnBuildSuccess(builder.EntityId);
                 }
                 else
                     Debug.Fail("Block not created");
+
+                
             }
         }
 
         /// <summary>
-        /// Spawn static grid - must have identity rotation matrix!
+        /// Spawn static grid - must have identity rotation matrix! If dontAdd is true, grid won't be added to enitites. Also it won't have entityId set.
         /// </summary>
-        public static MyCubeGrid SpawnStaticGrid(MyCubeBlockDefinition blockDefinition, MyEntity builder, MatrixD worldMatrix)
+        public static MyCubeGrid SpawnStaticGrid(MyCubeBlockDefinition blockDefinition, MyEntity builder, MatrixD worldMatrix, Vector3 color, SpawnFlags spawnFlags = SpawnFlags.Default)
         {
             Debug.Assert(Sync.IsServer, "Only server can spawn grids! Clients have to send requests!");
 
             var gridBuilder = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_CubeGrid>();
-            gridBuilder.PositionAndOrientation = new MyPositionAndOrientation(worldMatrix.Translation, Vector3.Forward, Vector3.Up);
+
+            Vector3 offset = Vector3.TransformNormal(MyCubeBlock.GetBlockGridOffset(blockDefinition), worldMatrix);
+            gridBuilder.PositionAndOrientation = new MyPositionAndOrientation(worldMatrix.Translation - offset, worldMatrix.Forward, worldMatrix.Up);
             gridBuilder.GridSizeEnum = blockDefinition.CubeSize;
             gridBuilder.IsStatic = true;
+            gridBuilder.CreatePhysics = (spawnFlags & SpawnFlags.CreatePhysics) != SpawnFlags.None;
+            gridBuilder.EnableSmallToLargeConnections = (spawnFlags & SpawnFlags.EnableSmallTolargeConnections) != SpawnFlags.None;
             gridBuilder.PersistentFlags |= MyPersistentEntityFlags2.Enabled | MyPersistentEntityFlags2.InScene;
-            gridBuilder.EntityId = MyEntityIdentifier.AllocateId();
+            if ((spawnFlags & SpawnFlags.AddToScene) != SpawnFlags.None)
+                gridBuilder.EntityId = MyEntityIdentifier.AllocateId();
 
             // Block must be placed on (0,0,0) coordinate
             var blockBuilder = MyObjectBuilderSerializer.CreateNewObject(blockDefinition.Id) as MyObjectBuilder_CubeBlock;
-            blockBuilder.Orientation = Quaternion.CreateFromForwardUp(Vector3I.Round(worldMatrix.Forward), Vector3I.Round(worldMatrix.Up));
-            Vector3I sizeRotated = Vector3I.Abs(Vector3I.Round(Vector3D.TransformNormal((Vector3)blockDefinition.Size, worldMatrix)));
-            blockBuilder.Min = sizeRotated / 2 - sizeRotated + Vector3I.One;
-            blockBuilder.EntityId = MyEntityIdentifier.AllocateId();
-            MyCubeBuilder.BuildComponent.BeforeCreateBlock(blockDefinition, builder, blockBuilder);
+            blockBuilder.Orientation = Quaternion.CreateFromForwardUp(Vector3I.Forward, Vector3I.Up);
+            blockBuilder.Min = blockDefinition.Size / 2 - blockDefinition.Size + Vector3I.One;
+            if ((spawnFlags & SpawnFlags.AddToScene) != SpawnFlags.None)
+                blockBuilder.EntityId = MyEntityIdentifier.AllocateId();
+            blockBuilder.ColorMaskHSV = color;
+            
+            MyCubeBuilder.BuildComponent.BeforeCreateBlock(blockDefinition, builder, blockBuilder, buildAsAdmin: (spawnFlags & SpawnFlags.SpawnAsMaster) != SpawnFlags.None);
 
             gridBuilder.CubeBlocks.Add(blockBuilder);
 
-            MyCubeGrid grid = MyEntities.CreateFromObjectBuilderAndAdd(gridBuilder) as MyCubeGrid;
-            if (grid != null)
+            MyCubeGrid grid;
+
+            if ((spawnFlags & SpawnFlags.AddToScene) != SpawnFlags.None)
             {
-                MySyncCreate.SendEntityCreated(gridBuilder);
+                grid = MyEntities.CreateFromObjectBuilderAndAdd(gridBuilder) as MyCubeGrid;
+            }
+            else
+            {
+                grid = MyEntities.CreateFromObjectBuilder(gridBuilder) as MyCubeGrid;
             }
 
             return grid;
         }
 
-        public static MyCubeGrid SpawnDynamicGrid(MyCubeBlockDefinition blockDefinition, MyEntity builder, MatrixD worldMatrix, long entityId = 0)
+        public static MyCubeGrid SpawnDynamicGrid(MyCubeBlockDefinition blockDefinition, MyEntity builder, MatrixD worldMatrix, Vector3 color, long entityId = 0, SpawnFlags spawnFlags = SpawnFlags.Default)
         {
             var gridBuilder = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_CubeGrid>();
-            gridBuilder.PositionAndOrientation = new MyPositionAndOrientation(ref worldMatrix);
+            Vector3 offset = Vector3.TransformNormal(MyCubeBlock.GetBlockGridOffset(blockDefinition), worldMatrix);
+
+            gridBuilder.PositionAndOrientation = new MyPositionAndOrientation(worldMatrix.Translation - offset, worldMatrix.Forward, worldMatrix.Up);
             gridBuilder.GridSizeEnum = blockDefinition.CubeSize;
             gridBuilder.IsStatic = false;
             gridBuilder.PersistentFlags |= MyPersistentEntityFlags2.Enabled | MyPersistentEntityFlags2.InScene;
@@ -4548,7 +3858,8 @@ namespace Sandbox.Game.Entities
             var blockBuilder = MyObjectBuilderSerializer.CreateNewObject(blockDefinition.Id) as MyObjectBuilder_CubeBlock;
             blockBuilder.Orientation = Quaternion.CreateFromForwardUp(Vector3I.Forward, Vector3I.Up);
             blockBuilder.Min = blockDefinition.Size / 2 - blockDefinition.Size + Vector3I.One;
-            MyCubeBuilder.BuildComponent.BeforeCreateBlock(blockDefinition, builder, blockBuilder);
+            blockBuilder.ColorMaskHSV = color;
+            MyCubeBuilder.BuildComponent.BeforeCreateBlock(blockDefinition, builder, blockBuilder, buildAsAdmin: (spawnFlags & SpawnFlags.SpawnAsMaster) != SpawnFlags.None);
 
             gridBuilder.CubeBlocks.Add(blockBuilder);
 
@@ -4569,10 +3880,6 @@ namespace Sandbox.Game.Entities
                     gridBuilder.EntityId = MyEntityIdentifier.AllocateId();
                     blockBuilder.EntityId = gridBuilder.EntityId + 1;
                     grid = MyEntities.CreateFromObjectBuilderAndAdd(gridBuilder) as MyCubeGrid;
-                    if (grid != null)
-                    {
-                        MySyncCreate.SendEntityCreated(gridBuilder);
-                    }
                 }
             }
 
@@ -4581,7 +3888,6 @@ namespace Sandbox.Game.Entities
 
         #endregion
 
-        private static int m_cycle = 0;
         public static void SelectBlockToToolbar(MySlimBlock block, bool selectToNextSlot = true)
         {
             Debug.Assert(block != null && MyToolbarComponent.CurrentToolbar != null);
@@ -4627,15 +3933,37 @@ namespace Sandbox.Game.Entities
             }
         }
 
-        public bool CanBuildBlockSurvivalTime()
+        /// <summary>
+        /// Triggered when Current Grid is changed to new one.
+        /// </summary>
+        /// <param name="newCurrentGrid">New grid that will replace the old one.</param>
+        private void BeforeCurrentGridChange(MyCubeGrid newCurrentGrid)
         {
-            int currentGameTimeMs = MySandboxGame.TotalGamePlayTimeInMilliseconds;
-            return (currentGameTimeMs - m_lastBlockBuildTime) > SURVIVAL_BUILD_TIME_DELAY_MS;
+            this.TriggerRespawnShipNotification(newCurrentGrid);
+        }
+
+        /// <summary>
+        /// Checks if any player is an owner of particular respawn ship/cart,
+        /// and if yes than shows warning about desapearing respawn ship/cart.
+        /// </summary>
+        private void TriggerRespawnShipNotification(MyCubeGrid newCurrentGrid)
+        {
+            bool warningShown = false;
+
+            if (newCurrentGrid != null && newCurrentGrid.IsRespawnGrid)
+            {
+                Sandbox.Game.Gui.MyHud.Notifications.Add(MyNotificationSingletons.RespawnShipWarning);
+                warningShown = true;
+            }
+
+            if (!warningShown)
+                Sandbox.Game.Gui.MyHud.Notifications.Remove(MyNotificationSingletons.RespawnShipWarning);
+
         }
 
         public static double? GetCurrentRayIntersection()
         {
-            var hitInfo = MyPhysics.CastRay(MyCubeBuilder.IntersectionStart, MyCubeBuilder.IntersectionStart + 2000 * MyCubeBuilder.IntersectionDirection, MyPhysics.CollisionLayerWithoutCharacter);
+            var hitInfo = MyPhysics.CastRay(MyCubeBuilder.IntersectionStart, MyCubeBuilder.IntersectionStart + 2000 * MyCubeBuilder.IntersectionDirection, MyPhysics.CollisionLayers.CollisionLayerWithoutCharacter);
             if (hitInfo.HasValue)
             {
                 Vector3D p = hitInfo.Value.Position - MyCubeBuilder.IntersectionStart;
@@ -4650,18 +3978,18 @@ namespace Sandbox.Game.Entities
         /// Converts large grid hit coordinates for small cubes. Allows placement of small grids to large grids.
         /// Returns coordinates of small grid (in large grid coordinates) which touches large grid in the hit position.
         /// </summary>
-        public static Vector3 TransformLargeGridHitCoordToSmallGrid(Vector3 coords, Matrix worldMatrixNormalizedInv, float gridSize)
+        public static Vector3 TransformLargeGridHitCoordToSmallGrid(Vector3D coords, MatrixD worldMatrixNormalizedInv, float gridSize)
         {
-            Vector3 localCoords = Vector3.Transform(coords, worldMatrixNormalizedInv);
+            Vector3D localCoords = Vector3D.Transform(coords, worldMatrixNormalizedInv);
             localCoords /= gridSize;
             // We have 10 small cubes in large one.
             localCoords *= 10f;
             Vector3I sign = Vector3I.Sign(localCoords);
             // Center of small cube has offset 0.05
-            localCoords -= 0.5f * sign;
-            localCoords = sign * Vector3I.Round(Vector3.Abs(localCoords));
-            localCoords += 0.5f * sign;
-            localCoords /= 10f;
+            localCoords -= 0.5 * sign;
+            localCoords = sign * Vector3I.Round(Vector3D.Abs(localCoords));
+            localCoords += 0.5 * sign;
+            localCoords /= 10;
             return localCoords;
         }
 
@@ -4669,11 +3997,11 @@ namespace Sandbox.Game.Entities
         {
             var gridBuilder = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_CubeGrid>();
             gridBuilder.EntityId = originalGrid.EntityId;
-            gridBuilder.PositionAndOrientation = new MyPositionAndOrientation(originalGrid.PositionAndOrientation.Value.Position, Vector3.Forward, Vector3.Up);
+            gridBuilder.PositionAndOrientation = new MyPositionAndOrientation(worldMatrix.Translation, worldMatrix.Forward, worldMatrix.Up);
             gridBuilder.GridSizeEnum = originalGrid.GridSizeEnum;
             gridBuilder.IsStatic = true;
             gridBuilder.PersistentFlags |= MyPersistentEntityFlags2.Enabled | MyPersistentEntityFlags2.InScene;
-
+            
             // Blocks in static grid - must be recreated for static grid with different orientation and position
             foreach (var origBlock in originalGrid.CubeBlocks)
             {
@@ -4726,7 +4054,8 @@ namespace Sandbox.Game.Entities
             orientation.GetQuaternion(out rotationQuat);
             Matrix origRotationMatrix = Matrix.CreateFromQuaternion(rotationQuat);
             Matrix rotationMatrix = origRotationMatrix * worldMatrix;
-            blockBuilder.Orientation = Quaternion.CreateFromRotationMatrix(rotationMatrix);
+            //blockBuilder.Orientation = Quaternion.CreateFromRotationMatrix(rotationMatrix);
+            blockBuilder.Orientation = Quaternion.CreateFromRotationMatrix(origRotationMatrix);
 
             Vector3I origSizeRotated = Vector3I.Abs(Vector3I.Round(Vector3.TransformNormal((Vector3)blockDefinition.Size, origRotationMatrix)));
             Vector3I origMin = origBlock.Min;
@@ -4735,10 +4064,15 @@ namespace Sandbox.Game.Entities
             Vector3I minXForm = Vector3I.Round(Vector3.TransformNormal((Vector3)origMin, worldMatrix));
             Vector3I maxXForm = Vector3I.Round(Vector3.TransformNormal((Vector3)origMax, worldMatrix));
 
-            blockBuilder.Min = Vector3I.Min(minXForm, maxXForm);
+            //blockBuilder.Min = Vector3I.Min(minXForm, maxXForm);
+            blockBuilder.Min = Vector3I.Min(origMin, origMax);
 
             blockBuilder.MultiBlockId = origBlock.MultiBlockId;
             blockBuilder.MultiBlockDefinition = origBlock.MultiBlockDefinition;
+            blockBuilder.MultiBlockIndex = origBlock.MultiBlockIndex;
+
+            blockBuilder.BuildPercent = origBlock.BuildPercent;
+            blockBuilder.IntegrityPercent = origBlock.BuildPercent;
 
             return blockBuilder;
         }
@@ -4748,10 +4082,148 @@ namespace Sandbox.Game.Entities
             foreach (var blockInCompoundID in blockInCompoundIDs)
             {
                 Vector3I cube = blockInCompoundID.Item1.Min;
-                for (Vector3I.RangeIterator it = new Vector3I.RangeIterator(ref blockInCompoundID.Item1.Min, ref blockInCompoundID.Item1.Max); it.IsValid(); it.GetNext(out cube))
+                for (Vector3I_RangeIterator it = new Vector3I_RangeIterator(ref blockInCompoundID.Item1.Min, ref blockInCompoundID.Item1.Max); it.IsValid(); it.GetNext(out cube))
                 {
                     outPositions.Add(cube);
                 }
+            }
+        }
+
+        [Event,Reliable,Server]
+        static void RequestGridSpawn(long builderEntityId, DefinitionIdBlit definition, BuildData position, bool instantBuild, bool forceStatic, uint colorMaskHsv)
+        {
+            Debug.Assert(BuildComponent != null, "The build component was not set in cube builder!");
+
+            MyEntity builder = null;
+            bool isAdmin = (MyEventContext.Current.IsLocallyInvoked || MySession.Static.HasPlayerAdminRights(MyEventContext.Current.Sender.Value) || MySession.Static.IsAdminModeEnabled(Sync.MyId));
+            MyEntities.TryGetEntityById(builderEntityId, out builder);
+
+            var blockDefinition = MyDefinitionManager.Static.GetCubeBlockDefinition(definition);
+            MatrixD worldMatrix = MatrixD.CreateWorld(position.Position, position.Forward, position.Up);
+
+            float gridSize = MyDefinitionManager.Static.GetCubeSize(blockDefinition.CubeSize);
+            BoundingBoxD localAABB = new BoundingBoxD(-blockDefinition.Size * gridSize * 0.5f, blockDefinition.Size * gridSize * 0.5f);
+
+            MyGridPlacementSettings settings = CubeBuilderDefinition.BuildingSettings.GetGridPlacementSettings(blockDefinition.CubeSize);
+            VoxelPlacementSettings voxelPlacementDef = new VoxelPlacementSettings() { PlacementMode = VoxelPlacementMode.OutsideVoxel };
+            settings.VoxelPlacement = voxelPlacementDef;
+
+            bool isStatic = forceStatic || MyCubeGrid.IsAabbInsideVoxel(worldMatrix, localAABB, settings);
+
+            BuildComponent.GetGridSpawnMaterials(blockDefinition, worldMatrix, isStatic);
+            bool hasBuildMat = (isAdmin && instantBuild) || MyCubeBuilder.BuildComponent.HasBuildingMaterials(builder);
+
+            bool canSpawn = true;
+            // Try spawning "fake" grid in that place, if fail it means something already there.
+            // TODO: broken for armor blocks. Rendering instance stays on the screen after creating temp grid
+            //if (isStatic)
+            //{
+            //    canSpawn = GridPlacementTest(builder, blockDefinition, worldMatrix);
+            //}
+            canSpawn = hasBuildMat & canSpawn; // It is not possible to create something in already occupied place, even if admin.
+
+            ulong senderId =  MyEventContext.Current.Sender.Value;
+
+            MyMultiplayer.RaiseStaticEvent(s => SpawnGridReply, canSpawn, new EndpointId(senderId));
+
+            if (!canSpawn) return;
+
+            MyCubeGrid grid = null;
+            SpawnFlags flags = SpawnFlags.Default;
+            if (isAdmin && instantBuild)
+            {
+                flags |= SpawnFlags.SpawnAsMaster;
+            }
+
+            Vector3 color = ColorExtensions.UnpackHSVFromUint(colorMaskHsv);
+
+            if (isStatic)
+            {
+                grid = SpawnStaticGrid(blockDefinition, builder, worldMatrix, color, flags);
+            }
+            else
+                grid = SpawnDynamicGrid(blockDefinition, builder, worldMatrix, color, spawnFlags: flags);
+
+            
+
+            if (grid != null)
+            {
+                if(grid.IsStatic && grid.GridSizeEnum != MyCubeSize.Small)
+                {
+                    bool result = MyCoordinateSystem.Static.IsLocalCoordSysExist(ref worldMatrix, grid.GridSize);
+                    if (result)
+                    {
+                        MyCoordinateSystem.Static.RegisterCubeGrid(grid);
+                    }
+                    else
+                    {
+                        MyCoordinateSystem.Static.CreateCoordSys(grid, CubeBuilderDefinition.BuildingSettings.StaticGridAlignToCenter, true);
+                    }
+                }
+
+                AfterGridBuild(builder, grid, instantBuild);
+            }
+        }
+
+        ///// <summary>
+        ///// Checks block placement in area.
+        ///// </summary>
+        ///// <returns>true if placement is possible</returns>
+        //private static bool GridPlacementTest(MyEntity builder, MyCubeBlockDefinition blockDefinition, MatrixD worldMatrix)
+        //{
+        //    bool canSpawn = true;
+        //    // TODO: this temporary grid has to be removed from here - causes many problems.
+        //    MyCubeGrid tempGrid = MyCubeBuilder.SpawnStaticGrid(blockDefinition, builder, worldMatrix, Vector3.Zero, SpawnFlags.None);
+        //    // tempGrid can be null when entity init fails.
+        //    if (tempGrid == null)
+        //        return false;
+
+        //    // Im not sure in this place, should client and server have the same creation settings?
+        //    //MyGridPlacementSettings gridPlacementSettings = MyPerGameSettings.CreationSettings.GetGridPlacementSettings(tempGrid);
+
+        //    var gridSize = tempGrid.GridSize;
+        //    var blocks = tempGrid.GetBlocks();
+
+        //    foreach (var block in blocks)
+        //    {
+        //        if (block.FatBlock is MyCompoundCubeBlock)
+        //        {
+        //            // TODO: block orientation should be removed 
+        //            MyBlockOrientation blockOrientation = new MyBlockOrientation(Base6Directions.Direction.Forward, Base6Directions.Direction.Up);
+
+        //            foreach (var blockInCompound in (block.FatBlock as MyCompoundCubeBlock).GetBlocks())
+        //            {
+        //                BoundingBoxD localAABB = new BoundingBoxD(-blockInCompound.BlockDefinition.Size * gridSize * 0.5f, blockInCompound.BlockDefinition.Size * gridSize * 0.5f);
+        //                canSpawn &= MyCubeGrid.TestBlockPlacementArea(blockInCompound.BlockDefinition, blockOrientation, blockInCompound.FatBlock.PositionComp.WorldMatrix, ref gridPlacementSettings, localAABB, false);
+        //            }
+        //        }
+        //        else
+        //        {
+        //            BoundingBoxD localAABB = new BoundingBoxD(-block.BlockDefinition.Size * gridSize * 0.5f, block.BlockDefinition.Size * gridSize * 0.5f);
+        //            Vector3D worldC;
+        //            block.ComputeWorldCenter(out worldC);
+        //            MatrixD blockWorldMatrix = MatrixD.CreateTranslation(worldC);
+        //            if (block.FatBlock != null)
+        //                blockWorldMatrix = block.FatBlock.PositionComp.WorldMatrix;
+        //            canSpawn &= MyCubeGrid.TestBlockPlacementArea(block.BlockDefinition, null, blockWorldMatrix, ref gridPlacementSettings, localAABB, false);
+        //        }
+        //    }
+            
+        //    tempGrid.Close();
+
+        //    return canSpawn;
+        //}
+
+        [Event, Reliable, Broadcast]
+        static void SpawnGridReply(bool success)
+        {
+            if (success)
+            {
+                MyGuiAudio.PlaySound(MyGuiSounds.HudPlaceBlock);
+            }
+            else
+            {
+                MyGuiAudio.PlaySound(MyGuiSounds.HudUnable);
             }
         }
     }

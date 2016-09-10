@@ -7,6 +7,7 @@ using Sandbox.Engine.Utils;
 using Sandbox.Game.GameSystems;
 using Sandbox.Game.Gui;
 using Sandbox.Game.Localization;
+using Sandbox.Game.Multiplayer;
 using Sandbox.Game.Screens;
 using Sandbox.Game.Screens.Helpers;
 using Sandbox.Game.World;
@@ -20,6 +21,7 @@ using System.Linq;
 using System.Text;
 using VRage;
 using VRage.FileSystem;
+using VRage.Game;
 using VRage.Library.Utils;
 using VRage.Utils;
 using VRageMath;
@@ -36,7 +38,9 @@ namespace Sandbox.Game.Gui
 
         string m_sessionPath;
 
+#if !XB1 // XB1_NOWORKSHOP
         private List<MySteamWorkshop.SubscribedItem> m_subscribedScenarios;
+#endif // !XB1
 
         protected MyObjectBuilder_SessionSettings m_settings;
         public MyObjectBuilder_SessionSettings Settings
@@ -95,8 +99,8 @@ namespace Sandbox.Game.Gui
             Vector2 buttonsOrigin = m_size.Value / 2 - new Vector2(0.65f, 0.1f);
 
             var difficultyLabel = MakeLabel(MySpaceTexts.Difficulty);
-            var onlineModeLabel = MakeLabel(MySpaceTexts.WorldSettings_OnlineMode);
-            m_maxPlayersLabel = MakeLabel(MySpaceTexts.MaxPlayers);
+            var onlineModeLabel = MakeLabel(MyCommonTexts.WorldSettings_OnlineMode);
+            m_maxPlayersLabel = MakeLabel(MyCommonTexts.MaxPlayers);
 
             float width = 0.284375f + 0.025f;
 
@@ -109,10 +113,10 @@ namespace Sandbox.Game.Gui
             m_onlineMode = new MyGuiControlCombobox(size: new Vector2(width, 0.04f));
             m_onlineMode.Enabled = false;
             m_onlineMode.ItemSelected += OnOnlineModeSelect;
-            m_onlineMode.AddItem((int)MyOnlineModeEnum.OFFLINE, MySpaceTexts.WorldSettings_OnlineModeOffline);
-            m_onlineMode.AddItem((int)MyOnlineModeEnum.PRIVATE, MySpaceTexts.WorldSettings_OnlineModePrivate);
-            m_onlineMode.AddItem((int)MyOnlineModeEnum.FRIENDS, MySpaceTexts.WorldSettings_OnlineModeFriends);
-            m_onlineMode.AddItem((int)MyOnlineModeEnum.PUBLIC, MySpaceTexts.WorldSettings_OnlineModePublic);
+            m_onlineMode.AddItem((int)MyOnlineModeEnum.OFFLINE, MyCommonTexts.WorldSettings_OnlineModeOffline);
+            m_onlineMode.AddItem((int)MyOnlineModeEnum.PRIVATE, MyCommonTexts.WorldSettings_OnlineModePrivate);
+            m_onlineMode.AddItem((int)MyOnlineModeEnum.FRIENDS, MyCommonTexts.WorldSettings_OnlineModeFriends);
+            m_onlineMode.AddItem((int)MyOnlineModeEnum.PUBLIC, MyCommonTexts.WorldSettings_OnlineModePublic);
 
             m_maxPlayersSlider = new MyGuiControlSlider(
                 position: Vector2.Zero,
@@ -129,7 +133,11 @@ namespace Sandbox.Game.Gui
 
             //BUTTONS
             m_removeButton = new MyGuiControlButton(text: MyTexts.Get(MySpaceTexts.buttonRemove), onButtonClick: OnOkButtonClick);
+#if !XB1 // XB1_NOWORKSHOP
             m_publishButton = new MyGuiControlButton(text: MyTexts.Get(MySpaceTexts.buttonPublish), onButtonClick: OnPublishButtonClick);
+#else // XB1
+            m_publishButton = new MyGuiControlButton(text: MyTexts.Get(MySpaceTexts.buttonPublish), onButtonClick: OnOkButtonClick);
+#endif // XB1
             m_editButton = new MyGuiControlButton(text: MyTexts.Get(MySpaceTexts.buttonEdit), onButtonClick: OnEditButtonClick);
             m_browseWorkshopButton = new MyGuiControlButton(text: MyTexts.Get(MySpaceTexts.buttonBrowseWorkshop), onButtonClick: OnBrowseWorkshopClick);
 
@@ -152,11 +160,20 @@ namespace Sandbox.Game.Gui
             m_sideMenuLayout.Add(m_maxPlayersSlider, MyAlignH.Left, MyAlignV.Top, 4, 1);
 
             m_buttonsLayout.Add(m_removeButton, MyAlignH.Left, MyAlignV.Top, 0, 0);
-            m_buttonsLayout.Add(m_publishButton, MyAlignH.Left, MyAlignV.Top, 0, 1);
+            if (!MyFakes.XB1_PREVIEW)
+            {
+                m_buttonsLayout.Add(m_publishButton, MyAlignH.Left, MyAlignV.Top, 0, 1);
+            }
             m_buttonsLayout.Add(m_editButton, MyAlignH.Left, MyAlignV.Top, 0, 2);
-            m_buttonsLayout.Add(m_browseWorkshopButton, MyAlignH.Left, MyAlignV.Top, 0, 3);
+            if (!MyFakes.XB1_PREVIEW)
+            {
+                m_buttonsLayout.Add(m_browseWorkshopButton, MyAlignH.Left, MyAlignV.Top, 0, 3);
+            }
             m_buttonsLayout.Add(m_refreshButton, MyAlignH.Left, MyAlignV.Top, 1, 0);
-            m_buttonsLayout.Add(m_openInWorkshopButton, MyAlignH.Left, MyAlignV.Top, 1, 1);
+            if (!MyFakes.XB1_PREVIEW)
+            {
+                m_buttonsLayout.Add(m_openInWorkshopButton, MyAlignH.Left, MyAlignV.Top, 1, 1);
+            }
         }
 
         private void OnOnlineModeSelect()
@@ -188,6 +205,7 @@ namespace Sandbox.Game.Gui
         {
             base.LoadSandboxInternal(save, MP);
 
+#if !XB1 // XB1_NOWORKSHOP
             if (save.Item1 == WORKSHOP_PATH_TAG)
             {
                 var scenario = FindWorkshopScenario(save.Item2.WorkshopId.Value);
@@ -206,16 +224,18 @@ namespace Sandbox.Game.Gui
                     else
                         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                                     messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextWorkshopDownloadFailed),
-                                    messageCaption: MyTexts.Get(MySpaceTexts.ScreenCaptionWorkshop)));
+                                    messageCaption: MyTexts.Get(MyCommonTexts.ScreenCaptionWorkshop)));
                 });
             }
             else
+#endif // !XB1
             {
                 MyAnalyticsHelper.SetEntry(MyGameEntryEnum.Scenario);
                 MyScenarioSystem.LoadMission(save.Item1, /*m_nameTextbox.Text, m_descriptionTextbox.Text,*/ MP, (MyOnlineModeEnum)m_onlineMode.GetSelectedKey(), (short)m_maxPlayersSlider.Value);
             }
         }
 
+#if !XB1 // XB1_NOWORKSHOP
         private MySteamWorkshop.SubscribedItem FindWorkshopScenario(ulong workshopId)
         {
             foreach (var scenario in m_subscribedScenarios)
@@ -228,6 +248,7 @@ namespace Sandbox.Game.Gui
 
             return null;
         }
+#endif // !XB1
 
         protected override MyGuiHighlightTexture GetIcon(Tuple<string, MyWorldInfo> save)
         {
@@ -290,9 +311,11 @@ namespace Sandbox.Game.Gui
         {
             base.FillList();
             m_listLoadedParts = 0;
-            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MySpaceTexts.LoadingPleaseWait, null, beginKeens, endKeens));//from missions
-            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MySpaceTexts.LoadingPleaseWait, null, beginWorkshop, endWorkshop));//workshop items
-            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MySpaceTexts.LoadingPleaseWait, null, beginLocal, endLocal));//user's from saves
+            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MyCommonTexts.LoadingPleaseWait, null, beginKeens, endKeens));//from missions
+#if !XB1 // XB1_NOWORKSHOP
+            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MyCommonTexts.LoadingPleaseWait, null, beginWorkshop, endWorkshop));//workshop items
+#endif // !XB1
+            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MyCommonTexts.LoadingPleaseWait, null, beginLocal, endLocal));//user's from saves
         }
 
         private void AfterPartLoaded()
@@ -335,8 +358,8 @@ namespace Sandbox.Game.Gui
             if (loadListRes.ContainsCorruptedWorlds)
             {
                 var messageBox = MyGuiSandbox.CreateMessageBox(
-                    messageText: MyTexts.Get(MySpaceTexts.SomeWorldFilesCouldNotBeLoaded),
-                    messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionError));
+                    messageText: MyTexts.Get(MyCommonTexts.SomeWorldFilesCouldNotBeLoaded),
+                    messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError));
                 MyGuiSandbox.AddScreen(messageBox);
             }
             AfterPartLoaded();
@@ -359,6 +382,7 @@ namespace Sandbox.Game.Gui
         }
 
 
+#if !XB1 // XB1_NOWORKSHOP
         private IMyAsyncResult beginWorkshop()
         {
             return new LoadWorkshopResult();
@@ -408,10 +432,12 @@ namespace Sandbox.Game.Gui
                 });
             }
         }
+#endif // !XB1
 
         #endregion
 
         #region steam publish
+#if !XB1 // XB1_NOWORKSHOP
         private MySteamWorkshop.SubscribedItem GetSubscribedItem(ulong? publishedFileId)
         {
             foreach (var subcribedItem in m_subscribedScenarios)
@@ -462,11 +488,11 @@ namespace Sandbox.Game.Gui
                         {
                             inTags = subscribedItem.Tags;
 
-                            if (subscribedItem.SteamIDOwner != MySteam.UserId)
+                            if (subscribedItem.SteamIDOwner != Sync.MyId)
                             {
                                 MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-                                    messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextPublishFailed_OwnerMismatchMod),//TODO rename
-                                    messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionModPublishFailed)));
+                                    messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextPublishFailed_OwnerMismatchMod),//TODO rename
+                                    messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionModPublishFailed)));
                                 return;
                             }
                         }
@@ -501,7 +527,7 @@ namespace Sandbox.Game.Gui
                                         switch (result)
                                         {
                                             case Result.AccessDenied:
-                                                error = MySpaceTexts.MessageBoxTextPublishFailed_AccessDenied;
+                                                error = MyCommonTexts.MessageBoxTextPublishFailed_AccessDenied;
                                                 break;
                                             default:
                                                 error = MySpaceTexts.MessageBoxTextScenarioPublishFailed;
@@ -510,7 +536,7 @@ namespace Sandbox.Game.Gui
 
                                         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
                                             messageText: MyTexts.Get(error),
-                                            messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionModPublishFailed)));
+                                            messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionModPublishFailed)));
                                     }
                                 });/*
                             }
@@ -518,6 +544,7 @@ namespace Sandbox.Game.Gui
                     }
                 }));
         }
+#endif // !XB1
 
         #endregion
 

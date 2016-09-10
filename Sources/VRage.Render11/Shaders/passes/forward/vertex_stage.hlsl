@@ -5,6 +5,7 @@ struct VertexStageOutput
 	MaterialVertexPayload custom;
 #ifdef PASS_OBJECT_VALUES_THROUGH_STAGES
 	float4 key_color_alpha : TEXCOORD7;
+	float custom_alpha : TEXCOORD9;
 #endif
 };
 
@@ -18,5 +19,6 @@ void __vertex_shader(__VertexInput input, out VertexStageOutput output, uint sv_
 	output.worldPosition = vertex.position_local.xyz;
 #ifdef PASS_OBJECT_VALUES_THROUGH_STAGES
 	output.key_color_alpha = float4(vertex.key_color, vertex.custom_alpha);
+	output.custom_alpha = vertex.custom_alpha;
 #endif
 }

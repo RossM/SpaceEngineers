@@ -1,4 +1,5 @@
-﻿using Sandbox.Engine.Utils;
+﻿#if !XB1
+using Sandbox.Engine.Utils;
 using Sandbox.Game;
 using System;
 using System.Collections.Generic;
@@ -6,7 +7,9 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+#if !XB1
 using System.Windows.Forms;
+#endif
 using VRage;
 using VRage.Utils;
 using VRageMath;
@@ -18,14 +21,18 @@ namespace Sandbox
     {
         public readonly IExternalApp ExternalApp;
         MyRenderDeviceSettings m_currentSettings;
+#if !XB1
         Control m_control;
+#endif
 
         public MySandboxExternal(IExternalApp externalApp, VRageGameServices services, string[] commandlineArgs, IntPtr windowHandle)
             : base(services, commandlineArgs)
         {
             WindowHandle = windowHandle;
             ExternalApp = externalApp;
+#if !XB1
             m_control = Control.FromHandle(windowHandle);
+#endif
         }
 
         public override void SwitchSettings(MyRenderDeviceSettings settings)
@@ -40,13 +47,18 @@ namespace Sandbox
             DrawThread = Thread.CurrentThread;
 
             MyRenderWindow wnd = new MyRenderWindow();
+#if XB1
+			System.Diagnostics.Debug.Assert(false);
+#else
             wnd.Control = Control.FromHandle(WindowHandle);
             wnd.TopLevelForm = (Form)wnd.Control.TopLevelControl;
 
             m_bufferedInputSource = wnd;
             m_windowCreatedEvent.Set();
             ((Form)wnd.TopLevelForm).FormClosed += (o, e) => ExitThreadSafe();
-            Action showCursor = () =>
+#endif
+
+			Action showCursor = () =>
             {
                 //if (!wnd.TopLevelForm.IsDisposed)
                 //wnd.TopLevelForm.ShowCursor = true;
@@ -72,10 +84,10 @@ namespace Sandbox
 
             if (settings == null)
             {
-                settings = new MyRenderDeviceSettings(0, MyWindowModeEnum.Window, wnd.Control.ClientSize.Width, wnd.Control.ClientSize.Height, 0, false);
+                settings = new MyRenderDeviceSettings(0, MyWindowModeEnum.Window, wnd.Control.ClientSize.Width, wnd.Control.ClientSize.Height, 0, false, false, false);
             }
 
-            GameRenderComponent.StartSync(m_gameTimer, wnd, settings, MyRenderQualityEnum.NORMAL);
+            GameRenderComponent.StartSync(m_gameTimer, wnd, settings, MyRenderQualityEnum.NORMAL, MyPerGameSettings.MaxFrameRate);
             GameRenderComponent.RenderThread.SizeChanged += RenderThread_SizeChanged;
             GameRenderComponent.RenderThread.BeforeDraw += RenderThread_BeforeDraw;
 
@@ -91,6 +103,9 @@ namespace Sandbox
 
         protected override void Update()
         {
+#if XB1
+			System.Diagnostics.Debug.Assert(false);
+#else
             if (GameRenderComponent.RenderThread != null)
             {
                 var size = m_control.ClientSize;
@@ -111,6 +126,8 @@ namespace Sandbox
 
             ExternalApp.Update();
             base.Update();
+#endif
         }
     }
 }
+#endif // !XB1

@@ -4,8 +4,12 @@ using Sandbox.Common.ObjectBuilders;
 using Sandbox.Common.ObjectBuilders.Definitions;
 using System.Collections.Generic;
 using VRage;
+using VRage.Game;
+using VRage.Game.Definitions;
+using VRage.Game.Definitions.Animation;
 using VRage.Game.ObjectBuilders;
 using VRage.ObjectBuilders;
+using VRage.Utils;
 using VRageMath;
 
 
@@ -32,7 +36,7 @@ namespace Sandbox.Definitions
                 }
                 else
                 {
-                    MyDefinitionErrors.Add(context, "Invalid definition id", ErrorSeverity.Error);
+                    MyDefinitionErrors.Add(context, "Invalid definition id", TErrorSeverity.Error);
                 }
             }
 
@@ -48,7 +52,7 @@ namespace Sandbox.Definitions
             }
         }
 
-        internal class DefinitionSet
+        internal class DefinitionSet : MyDefinitionSet
         {
             static DefinitionDictionary<MyDefinitionBase> m_helperDict = new DefinitionDictionary<MyDefinitionBase>(100);
 
@@ -57,9 +61,12 @@ namespace Sandbox.Definitions
                 Clear();
             }
 
-            public void Clear()
+            public void Clear(bool unload = false)
             {
+                base.Clear();
+
                 m_cubeSizes = new float[typeof(MyCubeSize).GetEnumValues().Length];
+                m_cubeSizesOriginal = new float[typeof(MyCubeSize).GetEnumValues().Length];
                 m_basePrefabNames = new string[m_cubeSizes.Length * 4]; // Index computed 4 * enumInt + 2*static + creative.
 
                 m_definitionsById = new DefinitionDictionary<MyDefinitionBase>(100);
@@ -111,15 +118,19 @@ namespace Sandbox.Definitions
                 m_respawnShips = new Dictionary<string, MyRespawnShipDefinition>();
 
                 m_sounds = new DefinitionDictionary<MyAudioDefinition>(10);
-                m_environmentDef = new MyEnvironmentDefinition();
-                m_behaviorDefinitions = new DefinitionDictionary<MyBehaviorDefinition>(10);
+
+                m_shipSounds = new DefinitionDictionary<MyShipSoundsDefinition>(10);                m_behaviorDefinitions = new DefinitionDictionary<MyBehaviorDefinition>(10);
                 m_voxelMapStorages = new Dictionary<string, MyVoxelMapStorageDefinition>(64);
                 m_characterNames = new List<MyCharacterName>(32);
 
                 m_battleDefinition = new MyBattleDefinition();
 
+                m_planetGeneratorDefinitions = new DefinitionDictionary<MyPlanetGeneratorDefinition>(5);
+
                 m_componentGroups = new DefinitionDictionary<MyComponentGroupDefinition>(4);
                 m_componentGroupMembers = new Dictionary<MyDefinitionId, MyTuple<int, MyComponentGroupDefinition>>();
+
+                m_planetPrefabDefinitions = new DefinitionDictionary<MyPlanetPrefabDefinition>(5);
 
                 m_groupedIds = new Dictionary<string, Dictionary<string, MyGroupedIds>>();
 
@@ -129,15 +140,41 @@ namespace Sandbox.Definitions
                 m_componentSubstitutions = new Dictionary<MyDefinitionId, MyComponentSubstitutionDefinition>();
 
                 m_destructionDefinition = new MyDestructionDefinition();
+
+                m_mapMultiBlockDefToCubeBlockDef = new Dictionary<string, MyCubeBlockDefinition>();
+                m_factionDefinitionsByTag.Clear();
+
+                m_idToRope = new Dictionary<MyDefinitionId, MyRopeDefinition>(MyDefinitionId.Comparer);
+
+                m_gridCreateDefinitions = new DefinitionDictionary<MyGridCreateToolDefinition>(3);
+
+                m_entityComponentDefinitions = new DefinitionDictionary<MyComponentDefinitionBase>(10);
+                m_entityContainers = new DefinitionDictionary<MyContainerDefinition>(10);
+                if (unload)
+                {
+                    m_physicalMaterialsByName = new Dictionary<string, MyPhysicalMaterialDefinition>();
+                }
+
+                m_lootBagDefinition = null;
             }
 
             public void OverrideBy(DefinitionSet definitionSet)
             {
+                base.OverrideBy(definitionSet);
+
+                foreach (var def in definitionSet.m_gridCreateDefinitions)
+                {
+                    m_gridCreateDefinitions[def.Key] = def.Value;
+                }
+
                 for (int i = 0; i < definitionSet.m_cubeSizes.Length; i++)
                 {
                     var cubeSize = definitionSet.m_cubeSizes[i];
                     if (cubeSize != 0)
+                    {
                         m_cubeSizes[i] = cubeSize;
+                        m_cubeSizesOriginal[i] = definitionSet.m_cubeSizesOriginal[i];
+                    }
                 }
 
                 for (int i = 0; i < definitionSet.m_basePrefabNames.Length; i++)
@@ -151,6 +188,11 @@ namespace Sandbox.Definitions
                 foreach (var voxelMaterial in definitionSet.m_voxelMaterialsByName)
                 {
                     m_voxelMaterialsByName[voxelMaterial.Key] = voxelMaterial.Value;
+                }
+
+                foreach (var physicalMaterial in definitionSet.m_physicalMaterialsByName)
+                {
+                    m_physicalMaterialsByName[physicalMaterial.Key] = physicalMaterial.Value;
                 }
 
                 MergeDefinitionLists(m_physicalItemDefinitions, definitionSet.m_physicalItemDefinitions);
@@ -262,12 +304,6 @@ namespace Sandbox.Definitions
                         m_respawnShips.Remove(respawnShip.Key);
                 }
 
-                if (definitionSet.m_environmentDef != null)
-                {
-                    if (definitionSet.m_environmentDef.Enabled)
-                        m_environmentDef.Merge(definitionSet.m_environmentDef);
-                }
-
                 foreach (var animationSet in definitionSet.m_animationsBySkeletonType)
                 {
                     foreach (var animation in animationSet.Value)
@@ -316,6 +352,21 @@ namespace Sandbox.Definitions
                 }
 
                 m_componentGroups.Merge(definitionSet.m_componentGroups);
+                foreach (var entry in definitionSet.m_planetGeneratorDefinitions)
+                {
+                    if (entry.Value.Enabled)
+                        m_planetGeneratorDefinitions[entry.Key] = entry.Value;
+                    else
+                        m_planetGeneratorDefinitions.Remove(entry.Key);
+                }
+
+                foreach (var entry in definitionSet.m_planetPrefabDefinitions)
+                {
+                    if (entry.Value.Enabled)
+                        m_planetPrefabDefinitions[entry.Key] = entry.Value;
+                    else
+                        m_planetPrefabDefinitions.Remove(entry.Key);
+                }
 
                 foreach (var entry in definitionSet.m_groupedIds)
                 {
@@ -339,6 +390,26 @@ namespace Sandbox.Definitions
                     if (definitionSet.m_destructionDefinition.Enabled)
                         m_destructionDefinition.Merge(definitionSet.m_destructionDefinition);
                 }
+
+                foreach (var entry in definitionSet.m_mapMultiBlockDefToCubeBlockDef)
+                {
+                    if (m_mapMultiBlockDefToCubeBlockDef.ContainsKey(entry.Key))
+                    {
+                        m_mapMultiBlockDefToCubeBlockDef.Remove(entry.Key);
+                    }
+
+                    m_mapMultiBlockDefToCubeBlockDef.Add(entry.Key, entry.Value);
+                }
+
+                foreach (var entry in definitionSet.m_idToRope)
+                {
+                    m_idToRope[entry.Key] = entry.Value;
+                }
+
+                m_entityComponentDefinitions.Merge(definitionSet.m_entityComponentDefinitions);
+                m_entityContainers.Merge(definitionSet.m_entityContainers);
+
+                m_lootBagDefinition = definitionSet.m_lootBagDefinition;
             }
 
             static void MergeDefinitionLists<T>(List<T> output, List<T> input) where T : MyDefinitionBase
@@ -364,6 +435,7 @@ namespace Sandbox.Definitions
             }
 
             internal float[] m_cubeSizes;
+            internal float[] m_cubeSizesOriginal;
             internal string[] m_basePrefabNames;
 
             internal DefinitionDictionary<MyCubeBlockDefinition>[] m_uniqueCubeBlocksBySize; //without variants
@@ -373,6 +445,7 @@ namespace Sandbox.Definitions
 
             internal DefinitionDictionary<MyPhysicalItemDefinition> m_physicalItemsByHandItemId;
             internal DefinitionDictionary<MyHandItemDefinition> m_handItemsByPhysicalItemId;
+            internal Dictionary<string, MyPhysicalMaterialDefinition> m_physicalMaterialsByName = new Dictionary<string,MyPhysicalMaterialDefinition>();
 
             internal Dictionary<string, MyVoxelMaterialDefinition> m_voxelMaterialsByName;
             internal Dictionary<byte, MyVoxelMaterialDefinition> m_voxelMaterialsByIndex;
@@ -416,9 +489,10 @@ namespace Sandbox.Definitions
             internal Dictionary<string, MyCubeBlockDefinitionGroup> m_blockGroups;
 
             internal Dictionary<string, Vector2I> m_blockPositions;
-            internal MyEnvironmentDefinition m_environmentDef = new MyEnvironmentDefinition();
 
             internal DefinitionDictionary<MyAudioDefinition> m_sounds;
+            internal DefinitionDictionary<MyShipSoundsDefinition> m_shipSounds;
+            internal MyShipSoundSystemDefinition m_shipSoundSystem = new MyShipSoundSystemDefinition();
 
             internal DefinitionDictionary<MyBehaviorDefinition> m_behaviorDefinitions;
 
@@ -430,10 +504,14 @@ namespace Sandbox.Definitions
 
             internal MyBattleDefinition m_battleDefinition;
 
+            internal DefinitionDictionary<MyPlanetGeneratorDefinition> m_planetGeneratorDefinitions;
+
             internal DefinitionDictionary<MyComponentGroupDefinition> m_componentGroups;
             internal Dictionary<MyDefinitionId, MyTuple<int, MyComponentGroupDefinition>> m_componentGroupMembers;
-            
+
             internal Dictionary<MyDefinitionId, MyComponentSubstitutionDefinition> m_componentSubstitutions;
+
+            internal DefinitionDictionary<MyPlanetPrefabDefinition> m_planetPrefabDefinitions;
 
             internal Dictionary<string, Dictionary<string, MyGroupedIds>> m_groupedIds;
 
@@ -442,6 +520,20 @@ namespace Sandbox.Definitions
             internal DefinitionDictionary<MyPirateAntennaDefinition> m_pirateAntennaDefinitions;
 
             internal MyDestructionDefinition m_destructionDefinition;
+
+            internal Dictionary<string, MyCubeBlockDefinition> m_mapMultiBlockDefToCubeBlockDef = new Dictionary<string, MyCubeBlockDefinition>();
+
+            internal Dictionary<string, MyFactionDefinition> m_factionDefinitionsByTag = new Dictionary<string, MyFactionDefinition>();
+
+            internal Dictionary<MyDefinitionId, MyRopeDefinition> m_idToRope = new Dictionary<MyDefinitionId, MyRopeDefinition>(MyDefinitionId.Comparer);
+
+            internal DefinitionDictionary<MyGridCreateToolDefinition> m_gridCreateDefinitions;
+
+            internal DefinitionDictionary<MyComponentDefinitionBase> m_entityComponentDefinitions;
+
+            internal DefinitionDictionary<MyContainerDefinition> m_entityContainers;
+
+            internal MyLootBagDefinition m_lootBagDefinition;
         }
     }
 }

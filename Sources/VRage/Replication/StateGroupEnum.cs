@@ -5,11 +5,21 @@ using System.Text;
 
 namespace VRage.Network
 {
+    /// <summary>
+    /// State groups, used to limit bandwidth by group.
+    /// </summary>
     public enum StateGroupEnum
     {
-        Physics,
+        PositionVerification,
         Terminal,
-        Inventory,
-        CubeGrid,
+        Properties,   
+        Inventory, 
+
+        Physics,
+       
+        Streamining,
+        FracturedPiece,
+
+        FloatingObjectPhysics,
     }
 }

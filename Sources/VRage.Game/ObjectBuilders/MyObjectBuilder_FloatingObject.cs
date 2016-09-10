@@ -1,13 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Linq;
-using System.Text;
+﻿using System.ComponentModel;
 using ProtoBuf;
 using VRage.ObjectBuilders;
 using VRage.Serialization;
 
-namespace Sandbox.Common.ObjectBuilders
+namespace VRage.Game
 {
     [ProtoContract]
     [MyObjectBuilderDefinition]
@@ -15,6 +11,10 @@ namespace Sandbox.Common.ObjectBuilders
     {
         [ProtoMember]
         public MyObjectBuilder_InventoryItem Item;
+
+        [ProtoMember, DefaultValue(0)]
+        public int ModelVariant;
+        public bool ShouldSerializeModelVariant() { return ModelVariant != 0; }
 
         [ProtoMember, DefaultValue(null)]
         [Serialize(MyObjectFlags.Nullable)]

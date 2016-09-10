@@ -45,6 +45,12 @@ namespace VRageMath
             this.Max = bbd.Max;
         }
 
+        public BoundingBox(BoundingBoxI bbd)
+        {
+            this.Min = bbd.Min;
+            this.Max = bbd.Max;
+        }
+
         public BoxCornerEnumerator Corners
         {
             get { return new BoxCornerEnumerator(Min, Max); }
@@ -125,6 +131,7 @@ namespace VRageMath
         /// Gets the array of points that make up the corners of the BoundingBox.
         /// </summary>
         /// <param name="corners">An existing array of at least 8 Vector3 points where the corners of the BoundingBox are written.</param>
+		[Unsharper.UnsharperDisableReflection()]
         public unsafe void GetCornersUnsafe(Vector3* corners)
         {
             corners[0].X = this.Min.X;
@@ -450,6 +457,26 @@ namespace VRageMath
             get { return (Max - Min) / 2; }
         }
 
+        public Vector3 Extents
+        {
+            get { return Max - Min; }
+        }
+
+        public float Width
+        {
+            get { return Max.X - Min.X; }
+        }
+
+        public float Height
+        {
+            get { return Max.Y - Min.Y; }
+        }
+
+        public float Depth
+        {
+            get { return Max.Z - Min.Z; }
+        }
+
         /// <summary>
         /// Checks whether the current BoundingBox intersects a BoundingFrustum.
         /// </summary>
@@ -713,6 +740,9 @@ namespace VRageMath
 
         public float Distance(Vector3 point)
         {
+            if (Contains(point) == ContainmentType.Contains)
+                return 0f;
+
             var clamp = Vector3.Clamp(point, Min, Max);
             return Vector3.Distance(clamp, point);
         }
@@ -894,7 +924,8 @@ namespace VRageMath
 
             for (int i = 0; i < 8; i++)
             {
-                Vector3 vctTransformed = Vector3.Transform(temporaryCorners[i], worldMatrix);
+                Vector3 vctTransformed;
+                Vector3.Transform(ref temporaryCorners[i], ref worldMatrix, out vctTransformed);
                 oobb = oobb.Include(ref vctTransformed);
             }
 
@@ -926,25 +957,13 @@ namespace VRageMath
         /// <returns></returns>
         public BoundingBox Include(ref Vector3 point)
         {
-            if (point.X < Min.X)
-                Min.X = point.X;
+            Min.X = Math.Min(point.X, Min.X);
+            Min.Y = Math.Min(point.Y, Min.Y);
+            Min.Z = Math.Min(point.Z, Min.Z);
 
-            if (point.Y < Min.Y)
-                Min.Y = point.Y;
-
-            if (point.Z < Min.Z)
-                Min.Z = point.Z;
-
-
-            if (point.X > Max.X)
-                Max.X = point.X;
-
-            if (point.Y > Max.Y)
-                Max.Y = point.Y;
-
-            if (point.Z > Max.Z)
-                Max.Z = point.Z;
-
+            Max.X = Math.Max(point.X, Max.X);
+            Max.Y = Math.Max(point.Y, Max.Y);
+            Max.Z = Math.Max(point.Z, Max.Z);
             return this;
         }
 
@@ -1129,5 +1148,13 @@ namespace VRageMath
         public static readonly ComparerType Comparer = new ComparerType();
 
         #endregion
+
+        public void Scale(Vector3 scale)
+        {
+            Vector3 center = Center;
+            Vector3 scaled = HalfExtents * scale;
+            Min = center - scaled;
+            Max = center + scaled;
+        }
     }
 }

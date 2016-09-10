@@ -6,14 +6,25 @@ using Sandbox.Game.World;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using Sandbox.Game.Entities.Cube;
 using VRage;
+using VRage.Game;
+using VRage.Game.Definitions;
+using VRage.Game.Entity;
 using VRage.ObjectBuilders;
 using VRageMath;
+using VRage.Collections;
 
 namespace Sandbox.Game.Screens.Helpers
 {
     public class MyToolbar
     {
+        public interface IMyToolbarExtension
+        {
+            void Update();
+            void AddedToToolbar(MyToolbar toolbar);
+        }
+
         public struct SlotArgs
         {
             public int? SlotNumber;
@@ -37,6 +48,8 @@ namespace Sandbox.Game.Screens.Helpers
         public int ItemCount { get { return SlotCount * PageCount; } }
 
         private MyToolbarItem[] m_items;
+
+        private CachingDictionary<Type, IMyToolbarExtension> m_extensions;
 
         private MyToolbarType m_toolbarType;
         public MyToolbarType ToolbarType
@@ -62,7 +75,7 @@ namespace Sandbox.Game.Screens.Helpers
 
         public bool ShowHolsterSlot
         {
-            get { return m_toolbarType == MyToolbarType.Character; }
+            get { return m_toolbarType == MyToolbarType.Character || m_toolbarType == MyToolbarType.BuildCockpit; }
         }
 
         public int? SelectedSlot
@@ -231,6 +244,10 @@ namespace Sandbox.Game.Screens.Helpers
                     SetItemAtSerialized(slot.Index, slot.Item, slot.Data);
                 }
             }
+
+            MyCockpit cockpit = Owner as MyCockpit;
+            if (cockpit != null && cockpit.CubeGrid != null)
+                cockpit.CubeGrid.OnBlockClosed += OnBlockClosed;
         }
 
         public MyObjectBuilder_Toolbar GetObjectBuilder()
@@ -334,13 +351,13 @@ namespace Sandbox.Game.Screens.Helpers
             if (m_items[i] != null)
             {
                 oldEnabledState = m_items[i].Enabled;
-                m_items[i].OnClose();
+                m_items[i].OnRemovedFromToolbar(this);
             }
 
             m_items[i] = item;
-
-            if (m_items[i] != null)
+            if (item != null)
             {
+                item.OnAddedToToolbar(this);
                 newEnabledState = true;
             }
 
@@ -359,15 +376,41 @@ namespace Sandbox.Game.Screens.Helpers
             }
         }
 
-        void ToolbarItemUpdated(MyToolbarItem obj, MyToolbarItem.ChangeInfo changed)
+        public void AddExtension(IMyToolbarExtension newExtension)
         {
-            if (ItemUpdated != null)
+            if (m_extensions == null)
             {
-                int index = Array.IndexOf(m_items, obj);
-                if (index != -1)
-                {
-                    ItemUpdated(this, new IndexArgs() { ItemIndex = index }, changed);
-                }
+                m_extensions = new CachingDictionary<Type, IMyToolbarExtension>();
+            }
+
+            m_extensions.Add(newExtension.GetType(), newExtension);
+            newExtension.AddedToToolbar(this);
+        }
+
+        public bool TryGetExtension<T>(out T extension)
+            where T: class, IMyToolbarExtension
+        {
+            extension = null;
+
+            if (m_extensions == null) return false;
+            IMyToolbarExtension retval = null;
+            if (m_extensions.TryGetValue(typeof(T), out retval))
+            {
+                extension = retval as T;
+            }
+            return extension != null;
+        }
+
+        public void RemoveExtension(IMyToolbarExtension toRemove)
+        {
+            m_extensions.Remove(toRemove.GetType());
+        }
+
+        void ToolbarItemUpdated(int index, MyToolbarItem.ChangeInfo changed)
+        {
+            if (m_items.IsValidIndex(index) && ItemUpdated != null)
+            {
+                ItemUpdated(this, new IndexArgs() { ItemIndex = index }, changed);
             }
         }
 
@@ -402,6 +445,40 @@ namespace Sandbox.Game.Screens.Helpers
         public void CharacterInventory_OnContentsChanged(MyInventoryBase inventory)
         {
             Update();
+        }
+
+        private void OnBlockClosed(MySlimBlock block)
+        {
+            if (block.FatBlock == null)
+                return;
+
+            // Check if this toolbar is owned by the removed block, in which case clear out all the items.
+            if (Owner != null && Owner.EntityId == block.FatBlock.EntityId)
+            {
+                for (int i = 0; i < m_items.Length; i++)
+                {
+                    if (m_items[i] == null) continue;
+
+                    m_items[i].OnRemovedFromToolbar(this);
+                    m_items[i] = null;
+                }
+                return;
+            }
+
+            // Check if the toolbar refers to the removed block, in which case, disable the removed item.
+            for (int i = 0; i < m_items.Length; i++)
+            {
+                if (m_items[i] == null) continue;
+
+                if (m_items[i] is IMyToolbarItemEntity)
+                {
+                    IMyToolbarItemEntity item = (IMyToolbarItemEntity)m_items[i];
+                    if (item.CompareEntityIds(block.FatBlock.EntityId))
+                    {
+                        m_items[i].SetEnabled(false);
+                    }
+                }
+            }
         }
 
         public void SetDefaults(bool sendEvent = true)
@@ -535,6 +612,10 @@ namespace Sandbox.Game.Screens.Helpers
             {
                 if (checkIfWantsToBeActivated && !itemToActivate.WantsToBeActivated)
                     return false;
+                if (itemToActivate.WantsToBeActivated || MyCubeBuilder.Static.IsActivated)
+                {
+                    Unselect(false);
+                }
                 return itemToActivate.Activate();
             }
             if (itemToActivate == null)
@@ -542,22 +623,19 @@ namespace Sandbox.Game.Screens.Helpers
             return false;
         }
 
-        public void Unselect()
+        public void Unselect(bool unselectSound = true)
         {
             if (MyToolbarComponent.CurrentToolbar != this)
                 return;
-            if (SelectedItem != null)
+            if (SelectedItem != null && unselectSound)
                 MyGuiAudio.PlaySound(MyGuiSounds.HudClick);
 
-            var controlledObject = MySession.ControlledEntity as IMyControllableEntity;
+                MySession.Static.GameFocusManager.Clear();
+
+            var controlledObject = MySession.Static.ControlledEntity;
             if (controlledObject != null)
                 controlledObject.SwitchToWeapon(null);
-
-            if (MyCubeBuilder.Static.IsActivated)
-            {
-                MyCubeBuilder.Static.Deactivate();
-            }
-
+            
             if (Unselected != null)
                 Unselected(this);
         }
@@ -589,15 +667,15 @@ namespace Sandbox.Game.Screens.Helpers
             return true;
         }
 
-        public string GetItemIcon(int idx)
+        public string[] GetItemIcons(int idx)
         {
             if (!IsValidIndex(idx))
-                return "";
+                return null;
 
             if (m_items[idx] != null)
-                return m_items[idx].Icon;
+                return m_items[idx].Icons;
 
-            return "";
+            return null;
         }
 
         public long GetControllerPlayerID()
@@ -632,7 +710,7 @@ namespace Sandbox.Game.Screens.Helpers
                     var updated = m_items[i].Update(Owner, playerID);
                     if (updated == MyToolbarItem.ChangeInfo.None) continue;
 
-                    ToolbarItemUpdated(m_items[i], updated);
+                    ToolbarItemUpdated(i, updated);
                 }
             }
 
@@ -674,6 +752,15 @@ namespace Sandbox.Game.Screens.Helpers
                 SelectedSlotChanged(this, new SlotArgs() { SlotNumber = m_selectedSlot });
 
             EnabledOverride = null;
+
+            if (m_extensions != null)
+            {
+                foreach (var extension in m_extensions.Values)
+                {
+                    extension.Update();
+                }
+                m_extensions.ApplyChanges();
+            }
 
             ProfilerShort.End();
         }

@@ -4,6 +4,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using VRage.Game;
+using VRage.Game.Definitions;
 
 namespace Sandbox.Definitions
 {
@@ -16,6 +18,7 @@ namespace Sandbox.Definitions
         public bool IsBlockCategory = true;
         public bool SearchBlocks = true;
         public bool ShowAnimations = false;
+        public bool ShowInCreative = true;
         public bool Public = true;
 
         private class SubtypeComparer : IComparer<MyGuiBlockCategoryDefinition>
@@ -39,6 +42,7 @@ namespace Sandbox.Definitions
             this.IsShipCategory = builder.IsShipCategory;
             this.SearchBlocks = builder.SearchBlocks;
             this.ShowAnimations = builder.ShowAnimations;
+            this.ShowInCreative = builder.ShowInCreative;
             this.Public = builder.Public;
         }
 

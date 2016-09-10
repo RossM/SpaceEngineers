@@ -20,29 +20,26 @@ using Sandbox.Game.Localization;
 using VRage.Audio;
 using VRage.Utils;
 using VRage.ModAPI;
+using Sandbox.ModAPI.Interfaces;
+using VRage.Game;
+using VRage.Game.Entity;
+using VRage.Game.ModAPI.Ingame;
+using IMyInventory = VRage.Game.ModAPI.Ingame.IMyInventory;
 
 namespace Sandbox.Game.Entities
 {
     [MyCubeBlockType(typeof(MyObjectBuilder_Reactor))]
-    class MyReactor : MyFunctionalBlock, IMyInventoryOwner, IMyConveyorEndpointBlock, IMyReactor
+    public class MyReactor : MyFunctionalBlock, IMyConveyorEndpointBlock, IMyReactor, IMyInventoryOwner
     {
-        static MyReactor()
-        {
-            var useConveyorSystem = new MyTerminalControlOnOffSwitch<MyReactor>("UseConveyor", MySpaceTexts.Terminal_UseConveyorSystem);
-            useConveyorSystem.Getter = (x) => (x as IMyInventoryOwner).UseConveyorSystem;
-            useConveyorSystem.Setter = (x, v) => MySyncConveyors.SendChangeUseConveyorSystemRequest(x.EntityId, v);
-            useConveyorSystem.EnableToggleAction();
-            MyTerminalControlFactory.AddControl(useConveyorSystem);
-        }
-
         private MyReactorDefinition m_reactorDefinition;
 		public MyReactorDefinition ReactorDefinition { get { return m_reactorDefinition; } }
 
-        private MyInventory m_inventory;
         private bool m_hasRemainingCapacity;
         private float m_maxOutput;
         private float m_currentOutput;
         //private MyParticleEffect m_damageEffect;// = new MyParticleEffect();
+
+        readonly Sync<float> m_remainingPowerCapacity;
 
 	    private MyResourceSourceComponent m_sourceComp;
 		public MyResourceSourceComponent SourceComp
@@ -58,53 +55,86 @@ namespace Sandbox.Game.Entities
 
         public MyReactor()
         {
-            m_soundEmitter = new MyEntity3DSoundEmitter(this);
+#if XB1 // XB1_SYNC_NOREFLECTION
+            m_remainingPowerCapacity = SyncType.CreateAndAddProp<float>();
+            m_useConveyorSystem = SyncType.CreateAndAddProp<bool>();
+#endif // XB1
+            CreateTerminalControls();
+
 			SourceComp = new MyResourceSourceComponent();
+            m_remainingPowerCapacity.ValueChanged += (x) => RemainingCapacityChanged();
+            m_remainingPowerCapacity.ValidateNever();
+        }
+
+        static void CreateTerminalControls()
+        {
+            if (MyTerminalControlFactory.AreControlsCreated<MyReactor>())
+                return;
+
+            var useConveyorSystem = new MyTerminalControlOnOffSwitch<MyReactor>("UseConveyor", MySpaceTexts.Terminal_UseConveyorSystem);
+            useConveyorSystem.Getter = (x) => (x).UseConveyorSystem;
+            useConveyorSystem.Setter = (x, v) => (x).UseConveyorSystem = v;
+            useConveyorSystem.EnableToggleAction();
+            MyTerminalControlFactory.AddControl(useConveyorSystem);
         }
 
         public override void Init(MyObjectBuilder_CubeBlock objectBuilder, MyCubeGrid cubeGrid)
-        {             
-            base.Init(objectBuilder, cubeGrid);
-
+        {
             MyDebug.AssertDebug(BlockDefinition.Id.TypeId == typeof(MyObjectBuilder_Reactor));
             m_reactorDefinition = BlockDefinition as MyReactorDefinition;
             MyDebug.AssertDebug(m_reactorDefinition != null);
 
             SourceComp.Init(
-                m_reactorDefinition.ResourceSourceGroup, 
+                m_reactorDefinition.ResourceSourceGroup,
                 new MyResourceSourceInfo
                 {
                     ResourceTypeId = MyResourceDistributorComponent.ElectricityId,
-                    DefinedOutput = m_reactorDefinition.MaxPowerOutput, 
+                    DefinedOutput = m_reactorDefinition.MaxPowerOutput,
                     ProductionToCapacityMultiplier = 60 * 60
                 });
-	        SourceComp.HasCapacityRemainingChanged += (id, source) => UpdateIsWorking();
-	        SourceComp.OutputChanged += Source_OnOutputChanged;
+            SourceComp.HasCapacityRemainingChanged += (id, source) => UpdateIsWorking();
+            SourceComp.OutputChanged += Source_OnOutputChanged;
             SourceComp.ProductionEnabledChanged += Source_ProductionEnabledChanged;
             SourceComp.Enabled = Enabled;
 
-            m_inventory = new MyInventory(m_reactorDefinition.InventoryMaxVolume, m_reactorDefinition.InventorySize, MyInventoryFlags.CanReceive, this);
-
+            base.Init(objectBuilder, cubeGrid);
+         
             var obGenerator = (MyObjectBuilder_Reactor)objectBuilder;
-            m_inventory.Init(obGenerator.Inventory);
-            m_inventory.ContentsChanged += inventory_ContentsChanged;
-            m_inventory.Constraint = m_reactorDefinition.InventoryConstraint;
-            RefreshRemainingCapacity();
 
+            if (MyFakes.ENABLE_INVENTORY_FIX)
+            {
+                FixSingleInventory();
+            }
+
+            if (this.GetInventory() == null)
+            {
+                MyInventory inventory = new MyInventory(m_reactorDefinition.InventoryMaxVolume, m_reactorDefinition.InventorySize, MyInventoryFlags.CanReceive);
+                Components.Add<MyInventoryBase>(inventory);
+                inventory.Init(obGenerator.Inventory);
+            }
+            Debug.Assert(this.GetInventory().Owner == this, "Ownership was not set!");
+
+            this.GetInventory().Constraint = m_reactorDefinition.InventoryConstraint;
+
+            if (Sync.IsServer)
+            {
+                RefreshRemainingCapacity();
+            }
+            
             UpdateText();
 
             SlimBlock.ComponentStack.IsFunctionalChanged += ComponentStack_IsFunctionalChanged;
 
             NeedsUpdate |= MyEntityUpdateEnum.EACH_100TH_FRAME;
 
-            m_useConveyorSystem = obGenerator.UseConveyorSystem;
+            m_useConveyorSystem.Value = obGenerator.UseConveyorSystem;
 			UpdateMaxOutputAndEmissivity();
         }
 
         public override MyObjectBuilder_CubeBlock GetObjectBuilderCubeBlock(bool copy = false)
         {
             var ob = (MyObjectBuilder_Reactor)base.GetObjectBuilderCubeBlock(copy);
-            ob.Inventory = m_inventory.GetObjectBuilder();
+            ob.Inventory = this.GetInventory().GetObjectBuilder();
             ob.UseConveyorSystem = m_useConveyorSystem;
             return ob;
         }
@@ -119,7 +149,8 @@ namespace Sandbox.Game.Entities
 
         protected override void Closing()
         {
-            m_soundEmitter.StopSound(true);
+            if (m_soundEmitter!= null)
+                m_soundEmitter.StopSound(true);
             base.Closing();
         }
 
@@ -134,7 +165,7 @@ namespace Sandbox.Game.Entities
             base.UpdateAfterSimulation100();
 
             // Will not consume anything when disabled.
-            int timeDelta = 100 * MyEngineConstants.UPDATE_STEP_SIZE_IN_MILLISECONDS;
+            int timeDelta = 100 * VRage.Game.MyEngineConstants.UPDATE_STEP_SIZE_IN_MILLISECONDS;
             if (Enabled && !MySession.Static.CreativeMode)
             {
                 ProfilerShort.Begin("ConsumeCondition");
@@ -148,26 +179,26 @@ namespace Sandbox.Game.Entities
                 ProfilerShort.End();
             }
 
-            if (Sync.IsServer && IsFunctional && m_useConveyorSystem && m_inventory.VolumeFillFactor < 0.6f)
+            if (Sync.IsServer && IsFunctional && m_useConveyorSystem && this.GetInventory().VolumeFillFactor < 0.6f)
             {
                 float consumptionPerSecond = m_reactorDefinition.MaxPowerOutput / SourceComp.ProductionToCapacityMultiplier;
                 var consumedUranium = (60 * consumptionPerSecond); // Take enough uranium for one minute of operation
                 consumedUranium /= m_reactorDefinition.FuelDefinition.Mass; // Convert weight to number of items
                 ProfilerShort.Begin("PullRequest");
-                MyGridConveyorSystem.ItemPullRequest(this, m_inventory, OwnerId, m_reactorDefinition.FuelId, (MyFixedPoint)consumedUranium);
+                MyGridConveyorSystem.ItemPullRequest(this, this.GetInventory(), OwnerId, m_reactorDefinition.FuelId, (MyFixedPoint)consumedUranium);
                 ProfilerShort.End();
             }
         }
 
         public override void OnDestroy()
         {
-            ReleaseInventory(m_inventory, true);
+            ReleaseInventory(this.GetInventory(), true);
             base.OnDestroy();
         }
 
         public override void OnRemovedByCubeBuilder()
         {
-            ReleaseInventory(m_inventory);
+            ReleaseInventory(this.GetInventory());
             base.OnRemovedByCubeBuilder();
         }
 
@@ -195,7 +226,7 @@ namespace Sandbox.Game.Entities
         internal void UpdateText()
         {
             DetailedInfo.Clear();
-            DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_Type));
+            DetailedInfo.AppendStringBuilder(MyTexts.Get(MyCommonTexts.BlockPropertiesText_Type));
             DetailedInfo.Append(BlockDefinition.DisplayNameText);
             DetailedInfo.Append("\n");
             DetailedInfo.AppendStringBuilder(MyTexts.Get(MySpaceTexts.BlockPropertiesText_MaxOutput));
@@ -222,37 +253,41 @@ namespace Sandbox.Game.Entities
                 consumedFuel = MyFixedPoint.SmallestPossibleValue;
             }
 
-            if (m_inventory.ContainItems(consumedFuel, m_reactorDefinition.FuelId))
+            if (this.GetInventory().ContainItems(consumedFuel, m_reactorDefinition.FuelId))
             {
-                m_inventory.RemoveItemsOfType(consumedFuel, m_reactorDefinition.FuelId);
+                this.GetInventory().RemoveItemsOfType(consumedFuel, m_reactorDefinition.FuelId);
             }
             else if (MyFakes.ENABLE_INFINITE_REACTOR_FUEL)
             {
-                m_inventory.AddItems((MyFixedPoint)(200 / m_reactorDefinition.FuelDefinition.Mass), m_reactorDefinition.FuelItem);
+                this.GetInventory().AddItems((MyFixedPoint)(200 / m_reactorDefinition.FuelDefinition.Mass), m_reactorDefinition.FuelItem);
             }
             else
             {
-                var amountAvailable = m_inventory.GetItemAmount(m_reactorDefinition.FuelId);
-                m_inventory.RemoveItemsOfType(amountAvailable, m_reactorDefinition.FuelId);
+                var amountAvailable = this.GetInventory().GetItemAmount(m_reactorDefinition.FuelId);
+                this.GetInventory().RemoveItemsOfType(amountAvailable, m_reactorDefinition.FuelId);
             }
         }
 
         private void RefreshRemainingCapacity()
         {
-            var fuelAmount = m_inventory.GetItemAmount(m_reactorDefinition.FuelId);
-            float remainingPowerCapacity;
+            if (this.GetInventory() == null)
+            {
+                Debug.Fail("Inventory component is missing! Can not refresh capacity.");
+                return;
+            }
+            var fuelAmount = this.GetInventory().GetItemAmount(m_reactorDefinition.FuelId);
             if (MySession.Static.CreativeMode && fuelAmount == 0)
-                remainingPowerCapacity = m_reactorDefinition.FuelDefinition.Mass;
+                m_remainingPowerCapacity.Value = m_reactorDefinition.FuelDefinition.Mass;
             else
-                remainingPowerCapacity = (float) fuelAmount;
-            SourceComp.SetRemainingCapacityByType(MyResourceDistributorComponent.ElectricityId, remainingPowerCapacity);
+                m_remainingPowerCapacity.Value = (float) fuelAmount;
+            SourceComp.SetRemainingCapacityByType(MyResourceDistributorComponent.ElectricityId, m_remainingPowerCapacity);
             UpdateMaxOutputAndEmissivity();
         }
 
 		private void Source_OnOutputChanged(MyDefinitionId resourceTypeId, float oldOutput, MyResourceSourceComponent source)
 	    {
 			UpdateText();
-			if ((SoundEmitter.Sound != null) && (SoundEmitter.Sound.IsPlaying))
+            if ((SoundEmitter != null) && (SoundEmitter.Sound != null) && (SoundEmitter.Sound.IsPlaying))
 			{
 				if (SourceComp.MaxOutput != 0f)
 				{
@@ -277,48 +312,15 @@ namespace Sandbox.Game.Entities
 
         private float ComputeMaxPowerOutput()
         {
-            return CheckIsWorking() || (Enabled && MySession.Static.CreativeMode) ? m_reactorDefinition.MaxPowerOutput * m_powerOutputMultiplier : 0f;
+            return CheckIsWorking() || (MySession.Static.CreativeMode && base.CheckIsWorking()) ? m_reactorDefinition.MaxPowerOutput * m_powerOutputMultiplier : 0f;
         }
 
-		private bool m_useConveyorSystem;
+		private readonly Sync<bool> m_useConveyorSystem;
 		private IMyConveyorEndpoint m_multilineConveyorEndpoint;
 
-        #region IMyInventoryOwner
+        #region Inventory        
 
-        public int InventoryCount { get { return 1; } }
-
-        String IMyInventoryOwner.DisplayNameText
-        {
-            get { return CustomName.ToString(); }
-        }
-
-        public MyInventory GetInventory(int index = 0)
-        {
-            Debug.Assert(index == 0);
-            return m_inventory;
-        }
-
-        public void SetInventory(MyInventory inventory, int index)
-        {
-            if (m_inventory != null)
-            {
-                m_inventory.ContentsChanged -= inventory_ContentsChanged;
-            }
-
-            m_inventory = inventory;
-
-            if (m_inventory != null)
-            {
-                m_inventory.ContentsChanged += inventory_ContentsChanged;
-            }
-        }
-
-        public MyInventoryOwnerTypeEnum InventoryOwnerType
-        {
-            get { return MyInventoryOwnerTypeEnum.Energy; }
-        }
-
-        bool IMyInventoryOwner.UseConveyorSystem
+        public bool UseConveyorSystem
         {
             get
             {
@@ -326,25 +328,29 @@ namespace Sandbox.Game.Entities
             }
             set
             {
-                m_useConveyorSystem = value;
+                m_useConveyorSystem.Value = value;
             }
         }
 
-        bool ModAPI.Interfaces.IMyInventoryOwner.UseConveyorSystem
+        protected override void OnInventoryComponentAdded(MyInventoryBase inventory)
         {
-            get
-            {
-                return (this as IMyInventoryOwner).UseConveyorSystem;
-            }
-            set
-            {
-                (this as IMyInventoryOwner).UseConveyorSystem = value;
+            base.OnInventoryComponentAdded(inventory);
+            Debug.Assert(this.GetInventory() != null, "Inventory component added to container, but different type than MyInventory?! This is not expected!");
+            if (Sync.IsServer && this.GetInventory() != null)
+            {                
+                this.GetInventory().ContentsChanged += inventory_ContentsChanged;
             }
         }
 
-        Sandbox.ModAPI.Interfaces.IMyInventory Sandbox.ModAPI.Interfaces.IMyInventoryOwner.GetInventory(int index)
+        protected override void OnInventoryComponentRemoved(MyInventoryBase inventory)
         {
-            return GetInventory(index);
+            base.OnInventoryComponentRemoved(inventory);
+            var inventoryRemoved = inventory as MyInventory;
+            Debug.Assert(inventoryRemoved != null, "Inventory component removed from container, but different type than MyInventory?! This is not expected!");
+            if (Sync.IsServer && inventoryRemoved != null)
+            {
+                inventoryRemoved.ContentsChanged -= inventory_ContentsChanged;
+            }
         }
 
         #endregion
@@ -368,6 +374,7 @@ namespace Sandbox.Game.Entities
         {
             UpdateMaxOutputAndEmissivity();
             if (IsWorking)
+
                 OnStartWorking();
             else
                 OnStopWorking();
@@ -383,7 +390,7 @@ namespace Sandbox.Game.Entities
             m_multilineConveyorEndpoint = new MyMultilineConveyorEndpoint(this);
             AddDebugRenderComponent(new Components.MyDebugRenderComponentDrawConveyorEndpoint(m_multilineConveyorEndpoint));
         }
-        bool Sandbox.ModAPI.Ingame.IMyReactor.UseConveyorSystem { get { return (this as IMyInventoryOwner).UseConveyorSystem; } }
+        bool Sandbox.ModAPI.Ingame.IMyReactor.UseConveyorSystem { get { return UseConveyorSystem; } }
 
         private float m_powerOutputMultiplier = 1f;
         float Sandbox.ModAPI.IMyReactor.PowerOutputMultiplier
@@ -405,5 +412,85 @@ namespace Sandbox.Game.Entities
                 UpdateText();
             }
         }
+
+        public float CurrentOutput
+        {
+            get { if (SourceComp != null) return SourceComp.CurrentOutput; return 0; }
+        }
+
+        public float MaxOutput
+        {
+            get
+            {
+                return m_reactorDefinition.MaxPowerOutput;
+            }
+        }
+
+        #region IMyInventoryOwner implementation
+
+        int IMyInventoryOwner.InventoryCount
+        {
+            get { return InventoryCount; }
+        }
+
+        long IMyInventoryOwner.EntityId
+        {
+            get { return EntityId; }
+        }
+
+        bool IMyInventoryOwner.HasInventory
+        {
+            get { return HasInventory; }
+        }
+
+        bool IMyInventoryOwner.UseConveyorSystem
+        {
+            get
+            {
+                return UseConveyorSystem;
+            }
+            set
+            {
+                UseConveyorSystem = value;
+            }
+        }
+
+        IMyInventory IMyInventoryOwner.GetInventory(int index)
+        {
+            return this.GetInventory(index);
+        }
+
+        #endregion
+
+        void RemainingCapacityChanged()
+        {
+            var before = IsWorking;
+
+            SourceComp.SetRemainingCapacityByType(MyResourceDistributorComponent.ElectricityId, m_remainingPowerCapacity);
+            UpdateMaxOutputAndEmissivity();
+
+            if (!before && IsWorking)
+                OnStartWorking();
+            else if (before && !IsWorking)
+                OnStopWorking();
+        }
+
+        #region IMyConveyorEndpointBlock implementation
+
+        public Sandbox.Game.GameSystems.Conveyors.PullInformation GetPullInformation()
+        {
+            Sandbox.Game.GameSystems.Conveyors.PullInformation pullInformation = new Sandbox.Game.GameSystems.Conveyors.PullInformation();
+            pullInformation.Inventory = this.GetInventory();
+            pullInformation.OwnerID = OwnerId;
+            pullInformation.ItemDefinition = m_reactorDefinition.FuelId;
+            return pullInformation;
+        }
+
+        public Sandbox.Game.GameSystems.Conveyors.PullInformation GetPushInformation()
+        {
+            return null;
+        }
+
+        #endregion
     }
 }

@@ -1,15 +1,20 @@
-﻿using System;
+﻿#if !XB1
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
+using System.Diagnostics;
+
+#if !UNSHARPER
 
 namespace System
 {
     public static class MethodInfoExtensions
     {
-        public static TDelegate CreateDelegate<TDelegate>(this MethodInfo method, Object instance)
+#if !XB1
+        public static TDelegate CreateDelegate<TDelegate>(this MethodInfo method, object instance)
             where TDelegate : class
         {
             return CreateDelegate<TDelegate>(method,
@@ -24,6 +29,7 @@ namespace System
                                                                      parameterExpressions));
                 });
         }
+#endif // !XB1
 
         public static TDelegate CreateDelegate<TDelegate>(this MethodInfo method)
             where TDelegate : class
@@ -73,3 +79,6 @@ namespace System
         }
     }
 }
+
+#endif
+#endif // !XB1

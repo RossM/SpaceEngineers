@@ -7,7 +7,6 @@ using VRageRender;
 using Sandbox.ModAPI;
 using Sandbox.Common;
 using Sandbox.Common.ObjectBuilders;
-using Sandbox.Common.ObjectBuilders.Voxels;
 using Sandbox.Definitions;
 using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
@@ -18,7 +17,7 @@ using System.Diagnostics;
 using System.Threading;
 
 using Sandbox.Game.Entities;
-using Sandbox.Common.Components;
+
 
 namespace Sandbox.Game.Components
 {
@@ -70,13 +69,10 @@ namespace Sandbox.Game.Components
                 VRageRender.MyRenderProxy.UpdateModelProperties(
                   RenderObjectIDs[0],
                   0,
-                  m_model.AssetName,
                   -1,
                   "Emissive",
                   null,
                   BulbColor,
-                  null,
-                  null,
                   CurrentLightPower);
                 m_emissiveMaterialDirty = false;
             }

@@ -8,7 +8,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using VRage;
+using VRage.Game;
 using VRage.Utils;
+using VRage.Library;
 
 namespace Sandbox.Game.World.Triggers
 {
@@ -35,18 +37,18 @@ namespace Sandbox.Game.World.Triggers
         public override StringBuilder GetProgress()
         {
             var players = MySession.Static.Players.GetOnlinePlayers();
-            if (players.Count() == 1)
+            if (players.Count == 1)
                 return null;//only me in game
             m_progress.Clear().Append(MyTexts.Get(MySpaceTexts.ScenarioProgressSomeoneWon));
             MyMissionTriggers mtrig;
             foreach (MyPlayer player in players)
             {
-                if (player == MySession.LocalHumanPlayer)
+                if (player == MySession.Static.LocalHumanPlayer)
                     continue;
                 if (!MySessionComponentMissionTriggers.Static.MissionTriggers.TryGetValue(player.Id, out mtrig))
                     continue;
                 if (!mtrig.Lost && !mtrig.Won)
-                    m_progress.Append(Environment.NewLine).Append("   ").Append(player.DisplayName);
+                    m_progress.Append(MyEnvironment.NewLine).Append("   ").Append(player.DisplayName);
             }
 
 

@@ -1,9 +1,7 @@
 ﻿using Sandbox.Common;
 using Sandbox.Common.ObjectBuilders;
 using Sandbox.Game.Entities;
-using Sandbox.Game.Entities.Character;
-using Sandbox.Graphics.GUI;
-using System;
+using VRage.Game;
 using VRage.Utils;
 
 namespace Sandbox.Engine.Utils
@@ -91,9 +89,11 @@ namespace Sandbox.Engine.Utils
         public static bool DEBUG_DRAW_MERGED_GRIDS = false;
         public static bool DEBUG_DRAW_VOXEL_PHYSICS_PREDICTION = false;
         public static bool DEBUG_DRAW_VOXEL_MAP_BOUNDING_BOX = false;
+        public static bool DEBUG_DRAW_VOXEL_NAMES = false;
         public static bool DEBUG_DRAW_FRACTURED_PIECES = false;
         public static bool DEBUG_DRAW_ENVIRONMENT_ITEMS = false;
         public static bool DEBUG_DRAW_SMALL_TO_LARGE_BLOCK_GROUPS = false;
+        public static bool DEBUG_DRAW_DYNAMIC_PHYSICAL_GROUPS = false;
         public static bool DEBUG_DRAW_ROPES = false;
         public static bool DEBUG_DRAW_OXYGEN = false;
         public static bool DEBUG_DRAW_ANIMALS = false;
@@ -105,6 +105,7 @@ namespace Sandbox.Engine.Utils
         public static bool DEBUG_DRAW_FLORA_SPAWNED_ITEMS = false;
         public static bool DEBUG_DRAW_ENTITY_COMPONENTS = false;
         public static bool DEBUG_DRAW_GRIDS_DECAY = false;
+        public static bool DEBUG_DRAW_ADDITIONAL_ENVIRONMENTAL_LIGHTS = false;
 
         public static MyWEMDebugDrawMode DEBUG_DRAW_NAVMESHES = MyWEMDebugDrawMode.NONE;
         internal static MyVoxelDebugDrawMode DEBUG_DRAW_VOXELS_MODE = MyVoxelDebugDrawMode.None;
@@ -114,6 +115,7 @@ namespace Sandbox.Engine.Utils
 
         // Put various debug draw here. If this cathegory becomes cluttered, create a separate one.
         public static bool DEBUG_DRAW_MISCELLANEOUS = false;
+        public static bool DEBUG_DRAW_METEORITS_DIRECTIONS = false;
 
         //Destruction
         public static bool BREAKABLE_SHAPE_CHILD_COUNT = false;
@@ -138,5 +140,27 @@ namespace Sandbox.Engine.Utils
         public static bool DEBUG_DRAW_PHYSICS_FORCES = false;
         public static bool DEBUG_DRAW_SUSPENSION_POWER = false;
         public static bool DEBUG_DRAW_CONSTRAINTS = false;
+        public static bool DEBUG_DRAW_FRICTION = false;
+        public static bool DEBUG_DRAW_UPDATE_TRIGGER = false;
+        public static bool DEBUG_DRAW_REQUEST_SHAPE_BLOCKING = false;
+        public static bool DEBUG_DRAW_FAUNA_COMPONENT = false;
+
+        public static float DEBUG_DRAW_MODEL_DUMMIES_DISTANCE = 0f;
+        public static bool DEBUG_DRAW_PLANET_SECTORS = false;
+        public static bool DEBUG_DRAW_PARTICLES = false;
+
+        // Regrowth System
+        public static bool DEBUG_DRAW_REGROWTH_ACTIVE_MODULES = false;
+        public static bool DEBUG_DRAW_REGROWTH_INTERACTABLE_ENTITIES = false;
+        public static bool DEBUG_DRAW_REGROWTH_GROWTHSTEPS = false;
+        public static bool DEBUG_DRAW_REGROWTH_EVENT_PROGRESS = false;
+
+        public static bool DEBUG_DRAW_DECAY = false;
+
+        public static bool DEBUG_DRAW_OWNERSHIP_CURRENT_SECTOR = false;
+        public static bool DEBUG_DRAW_OWNERSHIP_CURRENT_ANGLES = false;
+        public static bool DEBUG_DRAW_OWNERSHIP_SECTOR_ANGLES = false;
+        public static int DEBUG_DRAW_OWNERSHIP_DRAW_DISTANCE = 1000;
+        public static bool DEBUG_DRAW_OWNERSHIP_SECTORS_STATUS = false;
     }
 }

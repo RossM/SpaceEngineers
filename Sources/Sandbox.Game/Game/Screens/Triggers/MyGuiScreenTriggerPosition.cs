@@ -1,5 +1,4 @@
-﻿using Sandbox.Common.ObjectBuilders.Gui;
-using Sandbox.Game.Localization;
+﻿using Sandbox.Game.Localization;
 using Sandbox.Game.World;
 using Sandbox.Game.World.Triggers;
 using Sandbox.Graphics.GUI;
@@ -7,9 +6,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+#if !XB1
 using System.Text.RegularExpressions;
+#endif // !XB1
 using System.Threading;
 using VRage;
+using VRage.Game;
 using VRage.Library.Utils;
 using VRage.Utils;
 using VRageMath;
@@ -134,7 +136,11 @@ namespace Sandbox.Game.Screens.Triggers
         protected Vector3D m_coords = new Vector3D();
         void PasteFromClipboard()
         {
+#if !XB1
             m_clipboardText = System.Windows.Forms.Clipboard.GetText();
+#else
+            System.Diagnostics.Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif
         }
         private void OnPasteButtonClick(MyGuiControlButton sender)
         {
@@ -148,6 +154,9 @@ namespace Sandbox.Game.Screens.Triggers
         private static readonly string m_ScanPattern = @"GPS:([^:]{0,32}):([\d\.-]*):([\d\.-]*):([\d\.-]*):";
         private bool ScanText(string input)
         {
+#if XB1
+            System.Diagnostics.Debug.Assert(false, "TODO for XB1.");
+#else // !XB1
             // GPS:name without doublecolons:123.4:234.5:3421.6:
             foreach (Match match in Regex.Matches(input, m_ScanPattern))
             {
@@ -174,6 +183,7 @@ namespace Sandbox.Game.Screens.Triggers
                 m_coords.Z = z;
                 return true;//first match only
             }
+#endif // !XB1
 
             return false;
         }

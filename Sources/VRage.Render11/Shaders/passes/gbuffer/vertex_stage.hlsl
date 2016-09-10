@@ -2,7 +2,9 @@ struct VertexStageOutput
 {
 	float4 position : SV_Position;
 	MaterialVertexPayload custom;
+
 	float4 key_color_alpha : TEXCOORD7;
+	float custom_alpha : TEXCOORD9;
 #ifdef BUILD_TANGENT_IN_PIXEL
 	float3 position_ws : TEXCOORD8;
 #endif
@@ -16,6 +18,7 @@ void __vertex_shader(__VertexInput input, out VertexStageOutput output, uint sv_
 
 	output.position = vertex.position_clip;
 	output.key_color_alpha = float4(vertex.key_color, vertex.custom_alpha);
+	output.custom_alpha = vertex.custom_alpha;
 
 #ifdef BUILD_TANGENT_IN_PIXEL
 	output.position_ws = vertex.position_local.xyz;

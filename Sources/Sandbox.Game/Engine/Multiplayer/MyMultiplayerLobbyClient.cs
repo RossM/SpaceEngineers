@@ -16,6 +16,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using VRage;
+using VRage.Game;
 using VRage.Utils;
 using VRage.Trace;
 using VRage.Library.Utils;
@@ -35,7 +36,7 @@ namespace Sandbox.Engine.Multiplayer
     {
         public readonly Lobby Lobby;
 
-        public override bool IsServer { get { return ServerId == MySteam.UserId; } }
+        public override bool IsServer { get { return ServerId == Sync.MyId; } }
 
         public override string WorldName
         {
@@ -172,6 +173,12 @@ namespace Sandbox.Engine.Multiplayer
             set { Lobby.SetLobbyData(MyMultiplayer.BattleTag, value.ToString()); }
         }
 
+        public override float BattleRemainingTime
+        {
+            get { return GetLobbyFloat(MyMultiplayer.BattleRemainingTimeTag, Lobby, 0); }
+            set { Lobby.SetLobbyData(MyMultiplayer.BattleRemainingTimeTag, value.ToString(CultureInfo.InvariantCulture)); }
+        }
+
         public override bool BattleCanBeJoined
         {
             get { return GetLobbyBool(MyMultiplayer.BattleCanBeJoinedTag, Lobby, false); }
@@ -268,24 +275,18 @@ namespace Sandbox.Engine.Multiplayer
 
             SyncLayer.RegisterClientEvents(this);
 
-            if (IsServer)
-            {
-                HostName = MySteam.UserName;
-            }
-            else
-            {
-                SyncLayer.TransportLayer.IsBuffering = true;
-                
-                SetReplicationLayer(new MyReplicationClient(this, new MyClientState()));
-                syncLayer.TransportLayer.Register(MyMessageId.SERVER_DATA, ReplicationLayer.ProcessServerData);
-                syncLayer.TransportLayer.Register(MyMessageId.REPLICATION_CREATE, ReplicationLayer.ProcessReplicationCreate);
-                syncLayer.TransportLayer.Register(MyMessageId.REPLICATION_DESTROY, ReplicationLayer.ProcessReplicationDestroy);
-                syncLayer.TransportLayer.Register(MyMessageId.SERVER_STATE_SYNC, ReplicationLayer.ProcessStateSync);
-                syncLayer.TransportLayer.Register(MyMessageId.RPC, ReplicationLayer.ProcessEvent);
-            }
+
+            SyncLayer.TransportLayer.IsBuffering = true;
+
+            SetReplicationLayer(new MyReplicationClient(this, CreateClientState()));
+            syncLayer.TransportLayer.Register(MyMessageId.SERVER_DATA, ReplicationLayer.ProcessServerData);
+            syncLayer.TransportLayer.Register(MyMessageId.REPLICATION_CREATE, ReplicationLayer.ProcessReplicationCreate);
+            syncLayer.TransportLayer.Register(MyMessageId.REPLICATION_DESTROY, ReplicationLayer.ProcessReplicationDestroy);
+            syncLayer.TransportLayer.Register(MyMessageId.SERVER_STATE_SYNC, ReplicationLayer.ProcessStateSync);
+            syncLayer.TransportLayer.Register(MyMessageId.RPC, ReplicationLayer.ProcessEvent);
+            syncLayer.TransportLayer.Register(MyMessageId.REPLICATION_STREAM_BEGIN, ReplicationLayer.ProcessReplicationCreateBegin);
 
             Debug.Assert(!IsServer, "Wrong object created");
-            SyncLayer.RegisterMessageImmediate<AllMembersDataMsg>(OnAllMembersData, MyMessagePermissions.ToServer|MyMessagePermissions.FromServer);
 
             MySteam.API.Matchmaking.LobbyChatUpdate += Matchmaking_LobbyChatUpdate;
             MySteam.API.Matchmaking.LobbyChatMsg += Matchmaking_LobbyChatMsg;
@@ -325,11 +326,7 @@ namespace Sandbox.Engine.Multiplayer
                     // (see function MySyncLayer.RegisterClientEvents which registers all Members in Lobby).
                     if (Sync.Clients == null || !Sync.Clients.HasClient(changedUser))
                     {
-                        RaiseClientJoined(changedUser);
-
-                        // Battles - send all clients, identities, players, factions as first message to client
-                        if (Sync.IsServer && (Battle||Scenario) && changedUser != MySteam.UserId)
-                            SendAllMembersDataToClient(changedUser);
+                        RaiseClientJoined(changedUser);                 
                     }
 
                     if (MySandboxGame.IsGameReady && changedUser != ServerId)
@@ -341,7 +338,7 @@ namespace Sandbox.Engine.Multiplayer
 
                         if (showMsg)
                         {
-                            var playerJoined = new MyHudNotification(MySpaceTexts.NotificationClientConnected, 5000, level: MyNotificationLevel.Important);
+                            var playerJoined = new MyHudNotification(MyCommonTexts.NotificationClientConnected, 5000, level: MyNotificationLevel.Important);
                             playerJoined.SetTextFormatArguments(MySteam.API.Friends.GetPersonaName(changedUser));
                             MyHud.Notifications.Add(playerJoined);
                         }
@@ -360,8 +357,8 @@ namespace Sandbox.Engine.Multiplayer
 
                         MyGuiScreenMainMenu.UnloadAndExitToMenu();
                         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-                            messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionError),
-                            messageText: MyTexts.Get(MySpaceTexts.MultiplayerErrorServerHasLeft)));
+                            messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionError),
+                            messageText: MyTexts.Get(MyCommonTexts.MultiplayerErrorServerHasLeft)));
 
                         // Set new server
                         //ServerId = Lobby.GetOwner();
@@ -373,7 +370,7 @@ namespace Sandbox.Engine.Multiplayer
                     }
                     else if (MySandboxGame.IsGameReady)
                     {
-                        var playerLeft = new MyHudNotification(MySpaceTexts.NotificationClientDisconnected, 5000, level: MyNotificationLevel.Important);
+                        var playerLeft = new MyHudNotification(MyCommonTexts.NotificationClientDisconnected, 5000, level: MyNotificationLevel.Important);
                         playerLeft.SetTextFormatArguments(MySteam.API.Friends.GetPersonaName(changedUser));
                         MyHud.Notifications.Add(playerLeft);
                     }
@@ -394,7 +391,7 @@ namespace Sandbox.Engine.Multiplayer
             for (int i = 0; i < Lobby.MemberCount; i++)
             {
                 var member = Lobby.GetLobbyMemberByIndex(i);
-                if (member != MySteam.UserId && member == ServerId)
+                if (member != Sync.MyId && member == ServerId)
                 {
                     Peer2Peer.AcceptSession(member);
                 }
@@ -557,7 +554,7 @@ namespace Sandbox.Engine.Multiplayer
 
         public static bool IsLobbyCorrectVersion(Lobby lobby)
         {
-            return GetLobbyAppVersion(lobby) == Sandbox.Common.MyFinalBuildConstants.APP_VERSION;
+            return GetLobbyAppVersion(lobby) == MyFinalBuildConstants.APP_VERSION;
         }
 
         public static MyGameModeEnum GetLobbyGameMode(Lobby lobby)
@@ -739,12 +736,12 @@ namespace Sandbox.Engine.Multiplayer
         {
             RaiseClientKicked(data.KickedClient);
 
-            if (data.KickedClient == MySteam.UserId)
+            if (data.KickedClient == Sync.MyId)
             {
                 MyGuiScreenMainMenu.ReturnToMainMenu();
                 MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-                    messageCaption: MyTexts.Get(MySpaceTexts.MessageBoxCaptionKicked),
-                    messageText: MyTexts.Get(MySpaceTexts.MessageBoxTextYouHaveBeenKicked)));
+                    messageCaption: MyTexts.Get(MyCommonTexts.MessageBoxCaptionKicked),
+                    messageText: MyTexts.Get(MyCommonTexts.MessageBoxTextYouHaveBeenKicked)));
             }
             else
             {
@@ -763,7 +760,7 @@ namespace Sandbox.Engine.Multiplayer
             SendControlMessage(sender, ref data);
         }
 
-        public void OnAllMembersData(ref AllMembersDataMsg msg, MyNetworkClient sender)
+        public override void OnAllMembersData(ref AllMembersDataMsg msg)
         {
             if (Sync.IsServer)
             {
@@ -777,7 +774,7 @@ namespace Sandbox.Engine.Multiplayer
         #region ReplicationClient
         void IReplicationClientCallback.SendClientUpdate(BitStream stream)
         {
-            SyncLayer.TransportLayer.SendMessage(MyMessageId.CLIENT_UPDATE, stream, false, new EndpointId(Sync.ServerId));
+            SyncLayer.TransportLayer.SendMessage(MyMessageId.CLIENT_UPDATE, stream, true, new EndpointId(Sync.ServerId));
         }
 
         void IReplicationClientCallback.SendEvent(BitStream stream, bool reliable)
@@ -789,6 +786,12 @@ namespace Sandbox.Engine.Multiplayer
         {
             SyncLayer.TransportLayer.SendMessage(MyMessageId.REPLICATION_READY, stream, true, new EndpointId(Sync.ServerId));
         }
+
+        void IReplicationClientCallback.SendConnectRequest(BitStream stream)
+        {
+            SyncLayer.TransportLayer.SendMessage(MyMessageId.CLIENT_CONNNECTED, stream, true, new EndpointId(Sync.ServerId));
+        }
+
         #endregion
     }
 }

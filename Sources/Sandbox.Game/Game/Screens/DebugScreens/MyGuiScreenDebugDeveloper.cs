@@ -1,17 +1,24 @@
-﻿using Sandbox.Common.ObjectBuilders.Gui;
-using Sandbox.Engine.Utils;
+﻿using Sandbox.Engine.Utils;
 using Sandbox.Graphics.GUI;
-using Sandbox.Graphics.TransparentGeometry.Particles;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
 using VRage;
+using VRage.Game;
 using VRage.Input;
 using VRage.Plugins;
 using VRage.Utils;
 using VRageMath;
+using VRageRender;
 
+[Flags]
+public enum MyDirectXSupport : byte
+{
+    DX9 = 1,
+    DX11 = 2,
+    ALL = DX9|DX11
+}
 
 namespace Sandbox.Game.Gui
 {
@@ -20,16 +27,29 @@ namespace Sandbox.Game.Gui
     {
         public readonly string Group;
         public readonly string Name;
+        public readonly MyDirectXSupport DirectXSupport;
+
+        public MyDebugScreenAttribute(string group, string name, MyDirectXSupport directXSupport)
+        {
+            Group = group;
+            Name = name;
+            DirectXSupport = directXSupport;
+        }
 
         public MyDebugScreenAttribute(string group, string name)
         {
             Group = group;
             Name = name;
+            DirectXSupport = MyDirectXSupport.ALL;
         }
     }
 
     public class MyGuiScreenDebugDeveloper : MyGuiScreenDebugBase
     {
+#if XB1 // XB1_ALLINONEASSEMBLY
+        private static bool m_registered = false;
+#endif // XB1
+
         // Regex to replace member expressions by getter and setter
 
         // Static:
@@ -57,6 +77,18 @@ namespace Sandbox.Game.Gui
             public List<MyGuiControlBase> ControlList;
         };
 
+        class MyDevelopGroupTypes
+        {
+            public Type Name;
+            public MyDirectXSupport DirectXSupport;
+            public MyDevelopGroupTypes(Type name, MyDirectXSupport directXSupport)
+            {
+                Name = name;
+                DirectXSupport = directXSupport;
+            }
+            
+        };
+
         //Main groups
         static MyDevelopGroup s_debugDrawGroup = new MyDevelopGroup("Debug draw");
         static MyDevelopGroup s_performanceGroup = new MyDevelopGroup("Performance");
@@ -67,11 +99,35 @@ namespace Sandbox.Game.Gui
         };
         static MyDevelopGroup s_activeMainGroup = s_debugDrawGroup;
 
+        class DevelopGroupComparer : IComparer<string>
+        {
+            public int Compare(string x, string y)
+            {
+                if (x == "Game" && y == "Game")
+                    return 0;
+                if (x == "Game")
+                    return -1;
+                if (y == "Game")
+                    return 1;
+
+                if (x == "Render" && y == "Render")
+                    return 0;
+                if (x == "Render")
+                    return -1;
+                if (y == "Render")
+                    return 1;
+
+
+                return x.CompareTo(y); ;
+            }
+        }
+
+
         //Develop groups
         static MyDevelopGroup s_debugInputGroup = new MyDevelopGroup("Debug Input");
         static MyDevelopGroup s_activeDevelopGroup;
-        static Dictionary<string, MyDevelopGroup> s_developGroups = new Dictionary<string, MyDevelopGroup>();
-        static Dictionary<string, SortedDictionary<string, Type>> s_developScreenTypes = new Dictionary<string, SortedDictionary<string, Type>>();
+        static SortedDictionary<string, MyDevelopGroup> s_developGroups = new SortedDictionary<string, MyDevelopGroup>(new DevelopGroupComparer());
+        static Dictionary<string, SortedDictionary<string, MyDevelopGroupTypes>> s_developScreenTypes = new Dictionary<string, SortedDictionary<string, MyDevelopGroupTypes>>();
 
         static bool m_profilerEnabled = false;
 
@@ -93,7 +149,15 @@ namespace Sandbox.Game.Gui
                 return;
 
             var baseScreen = typeof(MyGuiScreenBase);
+#if XB1 // XB1_ALLINONEASSEMBLY
+            System.Diagnostics.Debug.Assert(m_registered == false);
+            if (m_registered == true)
+                return;
+            m_registered = true;
+            foreach (var type in MyAssembly.GetTypes())
+#else // !XB1
             foreach (var type in assembly.GetTypes())
+#endif // !XB1
             {
                 if (!baseScreen.IsAssignableFrom(type))
                     continue;
@@ -103,24 +167,28 @@ namespace Sandbox.Game.Gui
                     continue;
 
                 var attribute = (MyDebugScreenAttribute)attributes[0];
-                SortedDictionary<string, Type> typesInGroup;
+                SortedDictionary<string, MyDevelopGroupTypes> typesInGroup;
                 if (!s_developScreenTypes.TryGetValue(attribute.Group, out typesInGroup))
                 {
-                    typesInGroup = new SortedDictionary<string, Type>();
+                    typesInGroup = new SortedDictionary<string, MyDevelopGroupTypes>();
                     s_developScreenTypes.Add(attribute.Group, typesInGroup);
                     s_developGroups.Add(attribute.Group, new MyDevelopGroup(attribute.Group));
                 }
-
-                typesInGroup.Add(attribute.Name, type);
+                MyDevelopGroupTypes val = new MyDevelopGroupTypes(type, attribute.DirectXSupport);
+                typesInGroup.Add(attribute.Name, val);
             }
         }
 
         static MyGuiScreenDebugDeveloper()
         {
+#if XB1 // XB1_ALLINONEASSEMBLY
+            RegisterScreensFromAssembly(MyAssembly.AllInOneAssembly);
+#else // !XB1
             RegisterScreensFromAssembly(Assembly.GetExecutingAssembly());
             RegisterScreensFromAssembly(MyPlugins.GameAssembly);
             RegisterScreensFromAssembly(MyPlugins.SandboxAssembly);
             RegisterScreensFromAssembly(MyPlugins.UserAssembly);
+#endif // !XB1
 
             s_developGroups.Add(s_debugInputGroup.Name, s_debugInputGroup);
 
@@ -233,13 +301,19 @@ namespace Sandbox.Game.Gui
             m_currentPosition.Y += buttonSize.Y * 1.1f;
 
             float groupStartPosition = m_currentPosition.Y;
+            var renderer = MySandboxGame.Config.GraphicsRenderer;
+            bool rendererIsDirectX11 = !renderer.ToString().Equals(MySandboxGame.DirectX9RendererKey);
 
             foreach (var groupEntry in s_developScreenTypes)
             {
                 var group = s_developGroups[groupEntry.Key];
+
                 foreach (var typeEntry in groupEntry.Value)
                 {
-                    AddGroupBox(typeEntry.Key, typeEntry.Value, group.ControlList);
+                    //check for incompatible checkboxes (DirectX9/DirectX11)
+                    if (typeEntry.Value.DirectXSupport == MyDirectXSupport.DX9 && rendererIsDirectX11) continue;
+                    if (typeEntry.Value.DirectXSupport == MyDirectXSupport.DX11 && !rendererIsDirectX11) continue;
+                    AddGroupBox(typeEntry.Key, typeEntry.Value.Name, group.ControlList);
                 }
                 m_currentPosition.Y = groupStartPosition;
             }
@@ -265,20 +339,24 @@ namespace Sandbox.Game.Gui
         //Because of edit and continue
         void CreateDebugDrawControls()
         {
+#if !XB1
             //Debug draw
             AddCheckBox("Debug draw", null, MemberHelper.GetMember(() => MyDebugDrawSettings.ENABLE_DEBUG_DRAW), true, s_debugDrawGroup.ControlList);
             AddCheckBox("Draw physics", null, MemberHelper.GetMember(() => MyDebugDrawSettings.DEBUG_DRAW_PHYSICS), true, s_debugDrawGroup.ControlList);
             AddCheckBox("Audio debug draw", null, MemberHelper.GetMember(() => MyDebugDrawSettings.DEBUG_DRAW_AUDIO), true, s_debugDrawGroup.ControlList);
-            AddCheckBox("Profiler", () => EnableProfiler, (v) => EnableProfiler = v, true, s_debugDrawGroup.ControlList);
+            AddButton(new StringBuilder("Clear persistent"), (v) => MyRenderProxy.DebugClearPersistentMessages(), s_debugDrawGroup.ControlList);
             // AddCheckBox(new StringBuilder("Flatten primitive hierarchy"), null, MemberHelper.GetMember(() => MyPhysicsBody.DebugDrawFlattenHierarchy), true, s_debugDrawGroup.Item2);
-
+#endif
             m_currentPosition.Y += 0.01f;
         }
 
         //Because of edit and continue
         void CreatePerformanceControls()
         {
+#if !XB1
+            AddCheckBox("Profiler", () => EnableProfiler, (v) => EnableProfiler = v, true, s_performanceGroup.ControlList);
             AddCheckBox("Particles", null, MemberHelper.GetMember(() => MyParticlesManager.Enabled), true, s_performanceGroup.ControlList);
+#endif
             m_currentPosition.Y += 0.01f;
         }
 

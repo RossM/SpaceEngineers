@@ -1,6 +1,5 @@
 ﻿using Sandbox.Common;
 using Sandbox.Common.ObjectBuilders;
-using Sandbox.Common.ObjectBuilders.Voxels;
 using Sandbox.Definitions;
 using Sandbox.Engine.Physics;
 using Sandbox.Engine.Voxels;
@@ -14,23 +13,27 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using VRage;
+using VRageRender;
 using VRage.ModAPI;
 using VRage.ObjectBuilders;
 using VRage.Utils;
 using VRage.Voxels;
 using VRageMath;
 using VRage.Game;
-using VRage.Components;
+using VRage.Game.Components;
 using Sandbox.Engine.Utils;
 using System.Threading;
 using VRage.Network;
 using Sandbox.Game.World;
 using Sandbox.Engine.Multiplayer;
 using Sandbox.Game.Entities.Character;
+using VRage.Game.Entity;
+using VRage.Game.ModAPI.Interfaces;
+using VRage.Game.ModAPI;
 
 namespace Sandbox.Game.Entities
 {
-    public abstract class MyVoxelBase : MyEntity, IMyVoxelDrawable, IMyVoxelBase, IMyEventProxy
+    public abstract class MyVoxelBase : MyEntity, IMyVoxelDrawable, IMyVoxelBase, IMyDecalProxy, IMyEventProxy
     {
         struct MyRampShapeParams
         {
@@ -57,7 +60,7 @@ namespace Sandbox.Game.Entities
             Paint,
             Cut
         }
-        public int VoxelMapPruningProxyId = MyConstants.PRUNING_PROXY_ID_UNITIALIZED;
+        public int VoxelMapPruningProxyId = MyVRageConstants.PRUNING_PROXY_ID_UNITIALIZED;
 
         protected Vector3I m_storageMin = new Vector3I(0, 0, 0);
         public Vector3I StorageMin
@@ -83,11 +86,16 @@ namespace Sandbox.Game.Entities
             protected set;
         }
 
-        protected IMyStorage m_storage;
-        public IMyStorage Storage
+        protected Sandbox.Engine.Voxels.IMyStorage m_storage;
+        public virtual Sandbox.Engine.Voxels.IMyStorage Storage
         {
             get { return m_storage; }
+            set { }
         }
+
+        public bool CreateStorageCopyOnWrite = false;
+
+        public bool DelayRigidBodyCreation { get; set; }
 
         /// <summary>
         /// Size of voxel map (in voxels)
@@ -118,7 +126,7 @@ namespace Sandbox.Game.Entities
         /// <summary>
         /// Position of left/bottom corner of this voxel map, in world space (not relative to sector)
         /// </summary>
-        virtual public Vector3D PositionLeftBottomCorner
+        public virtual Vector3D PositionLeftBottomCorner
         {
             get;
             set;
@@ -130,7 +138,7 @@ namespace Sandbox.Game.Entities
         }
 
         bool m_contentChanged = false;
-        public bool ContentChanged 
+        public bool ContentChanged
         {
             get
             {
@@ -145,11 +153,34 @@ namespace Sandbox.Game.Entities
 
         }
 
-        
+        /// <summary>
+        /// Gets root voxel, for asteroids and planets itself.
+        /// For MyVoxelPhysics, should return owning planet.
+        /// </summary>
+        public abstract MyVoxelBase RootVoxel { get; }
 
-        public bool BeforeContentChanged { get; protected set; }
+        bool m_beforeContentChanged = false;
+        public bool BeforeContentChanged
+        {
+            get { return m_beforeContentChanged; }
+            protected set
+            {
+                if (m_beforeContentChanged != value)
+                {
+                    m_beforeContentChanged = value;
 
-        protected static MyStorageDataCache m_storageCache = new MyStorageDataCache();
+                    if (m_beforeContentChanged && CreateStorageCopyOnWrite)
+                    {
+                        Storage = m_storage.Copy();
+                        StorageName = MyVoxelMap.GetNewStorageName(StorageName);
+
+                        CreateStorageCopyOnWrite = false;
+                    }
+                }
+            }
+        }
+
+        protected static MyStorageData m_tempStorage = new MyStorageData();
 
         static MyShapeSphere m_sphereShape = new MyShapeSphere();
         static MyShapeBox m_boxShape = new MyShapeBox();
@@ -159,6 +190,30 @@ namespace Sandbox.Game.Entities
 
         static List<MyEntity> m_foundElements = new List<MyEntity>();
 
+        public delegate void StorageChanged(MyVoxelBase storage, Vector3I minVoxelChanged, Vector3I maxVoxelChanged, MyStorageDataTypeFlags changedData);
+
+        public event StorageChanged RangeChanged;
+
+        public bool CreatedByUser
+        {
+            get;
+            set;
+        }
+
+        public string AsteroidName
+        {
+            get;
+            set;
+        }
+
+        protected internal void OnRangeChanged(Vector3I voxelRangeMin, Vector3I voxelRangeMax, MyStorageDataTypeFlags changedData)
+        {
+            if (RangeChanged != null)
+            {
+                RangeChanged(this, voxelRangeMin, voxelRangeMax, changedData);
+            }
+        }
+
         //  Checks if specified box intersects bounding box of this this voxel map.
         public bool IsBoxIntersectingBoundingBoxOfThisVoxelMap(ref BoundingBoxD boundingBox)
         {
@@ -167,33 +222,40 @@ namespace Sandbox.Game.Entities
             return outRet;
         }
 
-
-        public void Init(string storageName, IMyStorage storage, Vector3D positionMinCorner)
+        abstract public void Init(MyObjectBuilder_EntityBase builder, Sandbox.Engine.Voxels.IMyStorage storage);
+        public void Init(string storageName, Sandbox.Engine.Voxels.IMyStorage storage, Vector3D positionMinCorner)
         {
             MatrixD worldMatrix = MatrixD.CreateTranslation(positionMinCorner + storage.Size / 2);
             Init(storageName, storage, worldMatrix);
         }
 
-        virtual public void Init(string storageName, IMyStorage storage, MatrixD worldMatrix)
+        public virtual void Init(string storageName, Sandbox.Engine.Voxels.IMyStorage storage, MatrixD worldMatrix)
         {
+            ProfilerShort.Begin("MyVoxelBase::Init");
             SyncFlag = true;
 
+            // Planet initalization needs to be re-done basically so issues like this don't exist anymore
+            if (Name == null)
             base.Init(null);
 
             StorageName = storageName;
             m_storage = storage;
 
+            CreateStorageCopyOnWrite = m_storage.Shared;
+
             InitVoxelMap(worldMatrix, storage.Size);
+
+            ProfilerShort.End();
         }
 
         //  This method initializes voxel map (size, position, etc) but doesn't load voxels
         //  It only presets all materials to values specified in 'defaultMaterial' - so it will become material everywhere.
-        virtual protected void InitVoxelMap(MatrixD worldMatrix, Vector3I size, bool useOffset = true)
+        protected virtual void InitVoxelMap(MatrixD worldMatrix, Vector3I size, bool useOffset = true)
         {
+            ProfilerShort.Begin("InitVoxelMap");
+
             NeedsUpdate |= MyEntityUpdateEnum.BEFORE_NEXT_FRAME;
             NeedsUpdate |= MyEntityUpdateEnum.EACH_10TH_FRAME;
-
-            var defaultMaterial = MyDefinitionManager.Static.GetDefaultVoxelMaterialDefinition();
 
             SizeInMetres = size * MyVoxelConstants.VOXEL_SIZE_IN_METRES;
             SizeInMetresHalf = SizeInMetres / 2.0f;
@@ -207,21 +269,26 @@ namespace Sandbox.Game.Entities
 
             PositionComp.SetWorldMatrix(worldMatrix);
 
-            Debug.Assert((Size.X & MyVoxelConstants.DATA_CELL_SIZE_IN_VOXELS_MASK) == 0);
-            Debug.Assert((Size.Y & MyVoxelConstants.DATA_CELL_SIZE_IN_VOXELS_MASK) == 0);
-            Debug.Assert((Size.Z & MyVoxelConstants.DATA_CELL_SIZE_IN_VOXELS_MASK) == 0);
-
-            Debug.Assert((Size.X % MyVoxelCoordSystems.RenderCellSizeInLodVoxels(0)) == 0);
-            Debug.Assert((Size.Y % MyVoxelCoordSystems.RenderCellSizeInLodVoxels(0)) == 0);
-            Debug.Assert((Size.Z % MyVoxelCoordSystems.RenderCellSizeInLodVoxels(0)) == 0);
-
             ContentChanged = false;
+
+            ProfilerShort.End();
         }
 
-
-        ModAPI.Interfaces.IMyStorage IMyVoxelBase.Storage
+        protected override void BeforeDelete()
         {
-            get { return (Storage as ModAPI.Interfaces.IMyStorage); }
+            base.BeforeDelete();
+
+            RangeChanged = null;
+
+            if (Storage != null && !Storage.Shared && !(this is MyVoxelPhysics))
+            {
+                Storage.Close();
+            }
+        }
+
+        VRage.ModAPI.IMyStorage IMyVoxelBase.Storage
+        {
+            get { return Storage; }
         }
 
         string IMyVoxelBase.StorageName
@@ -234,10 +301,13 @@ namespace Sandbox.Game.Entities
             MyObjectBuilder_VoxelMap voxelMapBuilder = (MyObjectBuilder_VoxelMap)base.GetObjectBuilder(copy);
 
             var minCorner = PositionLeftBottomCorner;
+
+            this.PositionLeftBottomCorner = this.WorldMatrix.Translation - Vector3D.TransformNormal(this.SizeInMetresHalf, WorldMatrix);
+
             if (MyPerGameSettings.OffsetVoxelMapByHalfVoxel)
                 minCorner -= MyVoxelConstants.VOXEL_SIZE_IN_METRES_HALF;
 
-            voxelMapBuilder.PositionAndOrientation = new MyPositionAndOrientation(minCorner, Vector3.Forward, Vector3.Up);
+            voxelMapBuilder.PositionAndOrientation = new MyPositionAndOrientation(minCorner, WorldMatrix.Forward, WorldMatrix.Up);
             voxelMapBuilder.StorageName = StorageName;
             voxelMapBuilder.MutableStorage = true;
             voxelMapBuilder.ContentChanged = ContentChanged;
@@ -275,11 +345,12 @@ namespace Sandbox.Game.Entities
 
             Storage.ClampVoxelCoord(ref minCorner);
             Storage.ClampVoxelCoord(ref maxCorner);
-            m_storageCache.Resize(minCorner, maxCorner);
-            Storage.ReadRange(m_storageCache, MyStorageDataTypeFlags.Content, 0, ref minCorner, ref maxCorner);
-            BoundingBoxD voxelBox;
+            m_tempStorage.Resize(minCorner, maxCorner);
+            Storage.ReadRange(m_tempStorage, MyStorageDataTypeFlags.Content, 0, ref minCorner, ref maxCorner);
 
+            BoundingBoxD voxelBox;
             Vector3I coord, cache;
+
             for (coord.Z = minCorner.Z, cache.Z = 0; coord.Z <= maxCorner.Z; coord.Z++, cache.Z++)
             {
                 for (coord.Y = minCorner.Y, cache.Y = 0; coord.Y <= maxCorner.Y; coord.Y++, cache.Y++)
@@ -289,7 +360,7 @@ namespace Sandbox.Game.Entities
                         MyVoxelCoordSystems.VoxelCoordToWorldAABB(PositionLeftBottomCorner - StorageMin * MyVoxelConstants.VOXEL_SIZE_IN_METRES, ref coord, out voxelBox);
                         if (worldAabb.Intersects(voxelBox))
                         {
-                            float content = m_storageCache.Content(ref cache) / MyVoxelConstants.VOXEL_CONTENT_FULL_FLOAT;
+                            float content = m_tempStorage.Content(ref cache) / MyVoxelConstants.VOXEL_CONTENT_FULL_FLOAT;
                             float containPercent = (float)(worldAabb.Intersect(voxelBox).Volume / MyVoxelConstants.VOXEL_VOLUME_IN_METERS);
                             result += content * containPercent;
                             cellCount += containPercent;
@@ -300,14 +371,112 @@ namespace Sandbox.Game.Entities
             return result;
         }
 
+        /// <summary>
+        /// Calculates amount of volume of a bounding box in voxels.
+        /// </summary>
+        /// <param name="localAabb">Local bounding box to query for.</param>
+        /// <param name="worldMatrix">World matrix of the bounding box.</param>
+        /// <returns>Pair of floats where 1st value is Volume amount and 2nd value is ratio of Volume amount to Whole volume.</returns>
+        public MyTuple<float,float> GetVoxelContentInBoundingBox_Fast(BoundingBoxD localAabb, MatrixD worldMatrix)
+        {
+            MatrixD toVoxel = worldMatrix * PositionComp.WorldMatrixNormalizedInv;
+            MatrixD toGrid; MatrixD.Invert(ref toVoxel, out toGrid);
+
+            BoundingBoxD transAABB = localAabb.Transform(toVoxel);
+            transAABB.Translate(SizeInMetresHalf + StorageMin);
+            Vector3I minI = Vector3I.Floor(transAABB.Min);
+            Vector3I maxI = Vector3I.Ceiling(transAABB.Max);
+
+            double vol = localAabb.Volume / MyVoxelConstants.VOXEL_VOLUME_IN_METERS;
+            int K = Math.Max((MathHelper.Log2Ceiling((int)vol) - MathHelper.Log2Ceiling(100)) / 3, 0);
+            float voxelSizeAtLod = MyVoxelConstants.VOXEL_SIZE_IN_METRES * (1 << K);
+            float voxelVolumeAtLod = voxelSizeAtLod * voxelSizeAtLod * voxelSizeAtLod;
+            minI >>= K;
+            maxI >>= K;
+
+           // localAabb.Inflate(1 * voxelSizeAtLod);
+
+            var offset = ((Size >> 1) + StorageMin) >> K;
+
+            m_tempStorage.Resize(maxI - minI + 1);
+            Storage.ReadRange(m_tempStorage, MyStorageDataTypeFlags.Content, K, minI, maxI);
+
+            float resultVolume = 0;
+            float resultPercent = 0;
+            int hitVolumeBoxes = 0;
+
+            MyOrientedBoundingBoxD worldbbox = new MyOrientedBoundingBoxD(localAabb, worldMatrix);
+
+            Vector3I coord, cache;
+            for (coord.Z = minI.Z, cache.Z = 0; coord.Z <= maxI.Z; coord.Z++, cache.Z++)
+            {
+                for (coord.Y = minI.Y, cache.Y = 0; coord.Y <= maxI.Y; coord.Y++, cache.Y++)
+                {
+                    for (coord.X = minI.X, cache.X = 0; coord.X <= maxI.X; coord.X++, cache.X++)
+                    {
+                        Vector3D voxelPos = (coord - offset) * voxelSizeAtLod;
+
+                        Vector3D gridPoint;
+                        Vector3D.Transform(ref voxelPos, ref toGrid, out gridPoint);
+
+                        ContainmentType cont;
+                        //localAabb.Contains(ref gridPoint, out cont);
+
+                        var voxelToWorld = WorldMatrix;
+                        voxelToWorld.Translation -= (Vector3D)StorageMin + SizeInMetresHalf;
+
+                        BoundingBoxD voxelBox = new BoundingBoxD();
+                        voxelBox.Min = ((Vector3D)(coord) - .5) * voxelSizeAtLod;
+                        voxelBox.Max = ((Vector3D)(coord) + .5) * voxelSizeAtLod;
+
+                        MyOrientedBoundingBoxD voxelBbox = new MyOrientedBoundingBoxD(voxelBox, voxelToWorld);
+
+                        cont = worldbbox.Contains(ref voxelBbox);
+
+                        if (cont == ContainmentType.Disjoint)
+                        {
+                            //VRageRender.MyRenderProxy.DebugDrawOBB(
+                            //new MyOrientedBoundingBoxD(voxelBox, voxelToWorld), Color.Red, 0.1f,
+                            //true, false);
+                            continue;
+                        }
+
+                        float content = m_tempStorage.Content(ref cache) / MyVoxelConstants.VOXEL_CONTENT_FULL_FLOAT;
+
+
+
+                        //VRageRender.MyRenderProxy.DebugDrawOBB(voxelBbox, Color.Aqua, content,
+                        //   true, false);
+
+                        resultVolume += content * voxelVolumeAtLod;
+                        resultPercent += content;
+                        hitVolumeBoxes++;
+                    }
+                }
+            }
+
+            resultPercent /= hitVolumeBoxes; 
+            //float localAABBVol = (float)localAabb.Volume;
+            //if (localAABBVol < resultVolume)
+            //    resultPercent *= (float)localAabb.Volume / resultVolume;
+
+
+            //VRageRender.MyRenderProxy.DebugDrawOBB(worldbbox, Color.Yellow, 0,
+            //                true, false);
+            //VRageRender.MyRenderProxy.DebugWaitForFrameFinish();
+
+
+            return new MyTuple<float, float>(resultVolume, resultPercent);
+        }
+
         //  Method finds intersection with line and any voxel triangleVertexes in this voxel map. Closes intersection is returned.
-        internal override bool GetIntersectionWithLine(ref LineD worldLine, out MyIntersectionResultLineTriangleEx? t, IntersectionFlags flags = IntersectionFlags.ALL_TRIANGLES)
+        public override bool GetIntersectionWithLine(ref LineD worldLine, out VRage.Game.Models.MyIntersectionResultLineTriangleEx? t, IntersectionFlags flags = IntersectionFlags.ALL_TRIANGLES)
         {
             t = null;
 
             double intersectionDistance;
             LineD line = (LineD)worldLine;
-            if (!PositionComp.WorldAABB.Intersects(line, out intersectionDistance))
+            if (!PositionComp.WorldAABB.Intersects(ref line, out intersectionDistance))
                 return false;
 
             ProfilerShort.Begin("VoxelMap.LineIntersection");
@@ -315,10 +484,10 @@ namespace Sandbox.Game.Entities
             {
                 Line localLine = new Line(worldLine.From - PositionLeftBottomCorner,
                                           worldLine.To - PositionLeftBottomCorner, true);
-                MyIntersectionResultLineTriangle tmpResult;
+                VRage.Game.Models.MyIntersectionResultLineTriangle tmpResult;
                 if (Storage.Geometry.Intersect(ref localLine, out tmpResult, flags))
                 {
-                    t = new MyIntersectionResultLineTriangleEx(tmpResult, this, ref worldLine);
+                    t = new VRage.Game.Models.MyIntersectionResultLineTriangleEx(tmpResult, this, ref worldLine);
                     var tmp = t.Value.IntersectionPointInWorldSpace;
                     tmp.AssertIsValid();
                     return true;
@@ -337,7 +506,7 @@ namespace Sandbox.Game.Entities
 
         public override bool GetIntersectionWithLine(ref LineD worldLine, out Vector3D? v, bool useCollisionModel = true, IntersectionFlags flags = IntersectionFlags.ALL_TRIANGLES)
         {
-            MyIntersectionResultLineTriangleEx? result;
+            VRage.Game.Models.MyIntersectionResultLineTriangleEx? result;
             GetIntersectionWithLine(ref worldLine, out result);
             v = null;
             if (result != null)
@@ -373,39 +542,44 @@ namespace Sandbox.Game.Entities
             }
         }
 
-        private unsafe int CountPointsInside(Vector3D* worldPoints, int pointCount)
+        public unsafe int CountPointsInside(Vector3D* worldPoints, int pointCount)
         {
+            MatrixD voxelTransform = PositionComp.WorldMatrixInvScaled;
+
             int pointCountInside = 0;
             Vector3I oldMin, oldMax;
             oldMin = new Vector3I(int.MaxValue);
             oldMax = new Vector3I(int.MinValue);
             for (int i = 0; i < pointCount; i++)
             {
+
                 Vector3D local;
-                Vector3I min;
-                Vector3D minRel;
-                MyVoxelCoordSystems.WorldPositionToLocalPosition(PositionLeftBottomCorner, ref worldPoints[i], out local);
-                MyVoxelCoordSystems.LocalPositionToVoxelCoord(ref local, out min);
-                MyVoxelCoordSystems.LocalPositionToVoxelCoord(ref local, out minRel);
-                minRel -= (Vector3D)min;
+                Vector3D.Transform(ref worldPoints[i], ref voxelTransform, out local);
+
+                Vector3D minRel = local + (Vector3D)(Size / 2);
+                Vector3I min = (Vector3I)Vector3D.Floor(minRel);
+
+                Vector3D.Fract(ref minRel, out minRel);
+
+                min -= StorageMin;
                 var max = min + 1;
                 if (min != oldMin && max != oldMax)
                 { // load only if range has changed
-                    m_storageCache.Resize(min, max);
-                    Storage.ReadRange(m_storageCache, MyStorageDataTypeFlags.Content, 0, ref min, ref max);
+                    m_tempStorage.Resize(min, max);
+                    Storage.ReadRange(m_tempStorage, MyStorageDataTypeFlags.Content, 0, ref min, ref max);
                     oldMin = min;
                     oldMax = max;
                 }
 
                 // Don't really need doubles but since position is in double and C# doesn't do SIMD yet, this makes little difference.
-                var c000 = (double)m_storageCache.Content(0, 0, 0);
-                var c100 = (double)m_storageCache.Content(1, 0, 0);
-                var c010 = (double)m_storageCache.Content(0, 1, 0);
-                var c110 = (double)m_storageCache.Content(1, 1, 0);
-                var c001 = (double)m_storageCache.Content(0, 0, 1);
-                var c101 = (double)m_storageCache.Content(1, 0, 1);
-                var c011 = (double)m_storageCache.Content(0, 1, 1);
-                var c111 = (double)m_storageCache.Content(1, 1, 1);
+                var c000 = (double)m_tempStorage.Content(0, 0, 0);
+                var c100 = (double)m_tempStorage.Content(1, 0, 0);
+                var c010 = (double)m_tempStorage.Content(0, 1, 0);
+                var c110 = (double)m_tempStorage.Content(1, 1, 0);
+                var c001 = (double)m_tempStorage.Content(0, 0, 1);
+                var c101 = (double)m_tempStorage.Content(1, 0, 1);
+                var c011 = (double)m_tempStorage.Content(0, 1, 1);
+                var c111 = (double)m_tempStorage.Content(1, 1, 1);
 
                 c000 = c000 + (c100 - c000) * minRel.X;
                 c010 = c010 + (c110 - c010) * minRel.X;
@@ -434,7 +608,7 @@ namespace Sandbox.Game.Entities
             return false;
         }
 
-        virtual public MyClipmapScaleEnum ScaleGroup
+        public virtual MyClipmapScaleEnum ScaleGroup
         {
             get
             {
@@ -447,6 +621,8 @@ namespace Sandbox.Game.Entities
         // mk:TODO Remove. This is not very accurate.
         public override bool DoOverlapSphereTest(float sphereRadius, Vector3D spherePos)
         {
+            if (Storage.Closed) return false;
+
             ProfilerShort.Begin("MyVoxelMap.DoOverlapSphereTest");
             Vector3D body0Pos = spherePos; // sphere pos
             BoundingSphereD newSphere;
@@ -467,8 +643,8 @@ namespace Sandbox.Game.Entities
 
             Storage.ClampVoxelCoord(ref minCorner);
             Storage.ClampVoxelCoord(ref maxCorner);
-            m_storageCache.Resize(minCorner, maxCorner);
-            Storage.ReadRange(m_storageCache, MyStorageDataTypeFlags.Content, 0, ref minCorner, ref maxCorner);
+            m_tempStorage.Resize(minCorner, maxCorner);
+            Storage.ReadRange(m_tempStorage, MyStorageDataTypeFlags.Content, 0, ref minCorner, ref maxCorner);
 
             Vector3I tempVoxelCoord, cache;
             for (tempVoxelCoord.Z = minCorner.Z, cache.Z = 0; tempVoxelCoord.Z <= maxCorner.Z; tempVoxelCoord.Z++, cache.Z++)
@@ -477,7 +653,7 @@ namespace Sandbox.Game.Entities
                 {
                     for (tempVoxelCoord.X = minCorner.X, cache.X = 0; tempVoxelCoord.X <= maxCorner.X; tempVoxelCoord.X++, cache.X++)
                     {
-                        byte voxelContent = m_storageCache.Content(ref cache);
+                        byte voxelContent = m_tempStorage.Content(ref cache);
 
                         //  Ignore voxels bellow the ISO value (empty, partialy empty...)
                         if (voxelContent < MyVoxelConstants.VOXEL_ISO_LEVEL) continue;
@@ -524,25 +700,36 @@ namespace Sandbox.Game.Entities
             return true;
         }
 
+        /**
+         * We use this to ensure voxels overlapping planets will have priority when spawning debris/ores.
+         */
         public virtual int GetOrePriority()
         {
             return MyVoxelConstants.PRIORITY_NORMAL;
         }
 
-        public void RequestVoxelCutoutSphere(Vector3D center, float radius, bool createDebris)
+        void IMyDecalProxy.AddDecals(MyHitInfo hitInfo, MyStringHash source, object customdata, IMyDecalHandler decalHandler)
         {
-            BeforeContentChanged = true;
-            MyMultiplayer.RaiseEvent(this, x => x.VoxelCutoutSphere_Implemenentation, center, radius, createDebris);
-            if (Sync.IsServer)
-            {
-                MyExplosion.CutOutVoxelMap(radius, center, this, createDebris && MySession.Ready);
-            }
+            MyDecalRenderInfo renderable = new MyDecalRenderInfo();
+            renderable.Flags = MyDecalFlags.World;
+            renderable.Position = hitInfo.Position;
+            renderable.Normal = hitInfo.Normal;
+            renderable.RenderObjectId = Render.GetRenderObjectID();
+            renderable.Material = Physics.GetMaterialAt(hitInfo.Position);
+
+            decalHandler.AddDecal(ref renderable);
         }
 
-        [Event, Reliable, Server, Broadcast, RefreshReplicable]
-        public void VoxelCutoutSphere_Implemenentation(Vector3D center, float radius, bool createDebris)
+        public void RequestVoxelCutoutSphere(Vector3D center, float radius, bool createDebris, bool damage)
         {
-            MyExplosion.CutOutVoxelMap(radius, center, this, createDebris && MySession.Ready);
+            BeforeContentChanged = true;
+            MyMultiplayer.RaiseEvent(RootVoxel, x => x.VoxelCutoutSphere_Implemenentation, center, radius, createDebris, damage);
+        }
+
+        [Event, Reliable, Broadcast, RefreshReplicable]
+        private void VoxelCutoutSphere_Implemenentation(Vector3D center, float radius, bool createDebris, bool damage = false)
+        {
+            MyExplosion.CutOutVoxelMap(radius, center, this, createDebris && MySession.Static.Ready, damage);
         }
 
         public void RequestVoxelOperationCapsule(Vector3D A, Vector3D B, float radius, MatrixD Transformation, byte material, OperationType Type)
@@ -559,9 +746,9 @@ namespace Sandbox.Game.Entities
         }
 
         [Event, Reliable, Server, RefreshReplicable]
-        static void VoxelOperationCapsule_Implementation(long entityId, MyCapsuleShapeParams capsuleParams, OperationType Type)
+        private static void VoxelOperationCapsule_Implementation(long entityId, MyCapsuleShapeParams capsuleParams, OperationType Type)
         {
-            m_capsuleShape.Transformation =capsuleParams.Transformation;
+            m_capsuleShape.Transformation = capsuleParams.Transformation;
             m_capsuleShape.A = capsuleParams.A;
             m_capsuleShape.B = capsuleParams.B;
             m_capsuleShape.Radius = capsuleParams.Radius;
@@ -574,7 +761,7 @@ namespace Sandbox.Game.Entities
                 if (voxel != null)
                 {
                     voxel.BeforeContentChanged = true;
-                    MyMultiplayer.RaiseEvent(voxel, x => x.PerformVoxelOperationCapsule_Implementation, capsuleParams, Type);
+                    MyMultiplayer.RaiseEvent(voxel.RootVoxel, x => x.PerformVoxelOperationCapsule_Implementation, capsuleParams, Type);
                     var amountChanged = voxel.UpdateVoxelShape(Type, m_capsuleShape, capsuleParams.Material);
                     if (Type == OperationType.Cut || Type == OperationType.Fill)
                     {
@@ -585,7 +772,7 @@ namespace Sandbox.Game.Entities
         }
 
         [Event, Reliable, Broadcast, RefreshReplicable]
-        void PerformVoxelOperationCapsule_Implementation(MyCapsuleShapeParams capsuleParams, OperationType Type)
+        private void PerformVoxelOperationCapsule_Implementation(MyCapsuleShapeParams capsuleParams, OperationType Type)
         {
             m_capsuleShape.Transformation = capsuleParams.Transformation;
             m_capsuleShape.A = capsuleParams.A;
@@ -606,31 +793,31 @@ namespace Sandbox.Game.Entities
         }
 
         [Event, Reliable, Server]
-        static void VoxelOperationSphere_Implementation(long entityId,Vector3D center, float radius, byte material, OperationType Type)
+        private static void VoxelOperationSphere_Implementation(long entityId, Vector3D center, float radius, byte material, OperationType Type)
         {
             m_sphereShape.Center = center;
             m_sphereShape.Radius = radius;
 
             if (CanPlaceInArea(Type, m_sphereShape))
-            { 
+            {
                 MyEntity entity;
                 MyEntities.TryGetEntityById(entityId, out entity);
                 MyVoxelBase voxel = entity as MyVoxelBase;
                 if (voxel != null)
                 {
                     voxel.BeforeContentChanged = true;
-                    MyMultiplayer.RaiseEvent(voxel, x => x.PerformVoxelOperationSphere_Implementation, center, radius, material, Type);
+                    MyMultiplayer.RaiseEvent(voxel.RootVoxel, x => x.PerformVoxelOperationSphere_Implementation, center, radius, material, Type);
                     var amountChanged = voxel.UpdateVoxelShape(Type, m_sphereShape, material);
                     if (Type == OperationType.Cut || Type == OperationType.Fill)
                     {
                         MySession.Static.VoxelHandVolumeChanged += amountChanged;
                     }
-                }     
+                }
             }
         }
 
         [Event, Reliable, Broadcast, RefreshReplicable]
-        public void PerformVoxelOperationSphere_Implementation(Vector3D center, float radius, byte material, OperationType Type)
+        private void PerformVoxelOperationSphere_Implementation(Vector3D center, float radius, byte material, OperationType Type)
         {
             m_sphereShape.Center = center;
             m_sphereShape.Radius = radius;
@@ -650,7 +837,7 @@ namespace Sandbox.Game.Entities
         }
 
         [Event, Reliable, Server, RefreshReplicable]
-        static void VoxelOperationBox_Implementation(long entityId, BoundingBoxD box, MatrixD Transformation, byte material, OperationType Type)
+        private static void VoxelOperationBox_Implementation(long entityId, BoundingBoxD box, MatrixD Transformation, byte material, OperationType Type)
         {
             m_boxShape.Transformation = Transformation;
             m_boxShape.Boundaries.Max = box.Max;
@@ -664,19 +851,19 @@ namespace Sandbox.Game.Entities
                 if (voxel != null)
                 {
                     voxel.BeforeContentChanged = true;
-                    MyMultiplayer.RaiseEvent(voxel, x => x.PerformVoxelOperationBox_Implementation, box, Transformation, material, Type);
+                    MyMultiplayer.RaiseEvent(voxel.RootVoxel, x => x.PerformVoxelOperationBox_Implementation, box, Transformation, material, Type);
                     var amountChanged = voxel.UpdateVoxelShape(Type, m_boxShape, material);
                     if (Type == OperationType.Cut || Type == OperationType.Fill)
                     {
                         MySession.Static.VoxelHandVolumeChanged += amountChanged;
                     }
                 }
-               
+
             }
         }
 
         [Event, Reliable, Broadcast]
-        public void PerformVoxelOperationBox_Implementation(BoundingBoxD box, MatrixD Transformation, byte material, OperationType Type)
+        private void PerformVoxelOperationBox_Implementation(BoundingBoxD box, MatrixD Transformation, byte material, OperationType Type)
         {
             m_boxShape.Transformation = Transformation;
             m_boxShape.Boundaries.Max = box.Max;
@@ -703,7 +890,7 @@ namespace Sandbox.Game.Entities
         }
 
         [Event, Reliable, Server, RefreshReplicable]
-        static void VoxelOperationRamp_Implementation(long entityId, MyRampShapeParams shapeParams, OperationType Type)
+        private static void VoxelOperationRamp_Implementation(long entityId, MyRampShapeParams shapeParams, OperationType Type)
         {
             m_rampShape.Transformation = shapeParams.Transformation;
             m_rampShape.Boundaries.Max = shapeParams.Box.Max;
@@ -713,13 +900,13 @@ namespace Sandbox.Game.Entities
 
             if (CanPlaceInArea(Type, m_rampShape))
             {
-               MyEntity entity;
+                MyEntity entity;
                 MyEntities.TryGetEntityById(entityId, out entity);
                 MyVoxelBase voxel = entity as MyVoxelBase;
                 if (voxel != null)
                 {
                     voxel.BeforeContentChanged = true;
-                    MyMultiplayer.RaiseEvent(voxel, x => x.PerformVoxelOperationRamp_Implementation, shapeParams, Type);
+                    MyMultiplayer.RaiseEvent(voxel.RootVoxel, x => x.PerformVoxelOperationRamp_Implementation, shapeParams, Type);
                     var amountChanged = voxel.UpdateVoxelShape(Type, m_rampShape, shapeParams.Material);
                     if (Type == OperationType.Cut || Type == OperationType.Fill)
                     {
@@ -730,7 +917,7 @@ namespace Sandbox.Game.Entities
         }
 
         [Event, Reliable, Broadcast]
-        void PerformVoxelOperationRamp_Implementation(MyRampShapeParams shapeParams, OperationType Type)
+        private void PerformVoxelOperationRamp_Implementation(MyRampShapeParams shapeParams, OperationType Type)
         {
             m_rampShape.Transformation = shapeParams.Transformation;
             m_rampShape.Boundaries.Max = shapeParams.Box.Max;
@@ -748,13 +935,13 @@ namespace Sandbox.Game.Entities
         public void RequestVoxelOperationElipsoid(Vector3 radius, MatrixD Transformation, byte material, OperationType Type)
         {
             BeforeContentChanged = true;
-            MyMultiplayer.RaiseStaticEvent(s => VoxelOperationElipsoid_Implementation,EntityId, radius, Transformation, material, Type);
+            MyMultiplayer.RaiseStaticEvent(s => VoxelOperationElipsoid_Implementation, EntityId, radius, Transformation, material, Type);
         }
 
         [Event, Reliable, Server, RefreshReplicable]
-        static void VoxelOperationElipsoid_Implementation(long entityId,Vector3 radius, MatrixD Transformation, byte material, OperationType Type)
+        private static void VoxelOperationElipsoid_Implementation(long entityId, Vector3 radius, MatrixD Transformation, byte material, OperationType Type)
         {
-            m_ellipsoidShape.Transformation =Transformation;
+            m_ellipsoidShape.Transformation = Transformation;
             m_ellipsoidShape.Radius = radius;
             if (CanPlaceInArea(Type, m_ellipsoidShape))
             {
@@ -764,7 +951,7 @@ namespace Sandbox.Game.Entities
                 if (voxel != null)
                 {
                     voxel.BeforeContentChanged = true;
-                    MyMultiplayer.RaiseEvent(voxel, x => x.PerformVoxelOperationElipsoid_Implementation, radius, Transformation, material, Type);
+                    MyMultiplayer.RaiseEvent(voxel.RootVoxel, x => x.PerformVoxelOperationElipsoid_Implementation, radius, Transformation, material, Type);
                     var amountChanged = voxel.UpdateVoxelShape(Type, m_ellipsoidShape, material);
                     if (Type == OperationType.Cut || Type == OperationType.Fill)
                     {
@@ -776,7 +963,7 @@ namespace Sandbox.Game.Entities
         }
 
         [Event, Reliable, Broadcast]
-        public void PerformVoxelOperationElipsoid_Implementation(Vector3 radius, MatrixD Transformation, byte material, OperationType Type)
+        private void PerformVoxelOperationElipsoid_Implementation(Vector3 radius, MatrixD Transformation, byte material, OperationType Type)
         {
             m_ellipsoidShape.Transformation = Transformation;
             m_ellipsoidShape.Radius = radius;
@@ -808,7 +995,7 @@ namespace Sandbox.Game.Entities
             return true;
         }
 
-        static public  bool IsForbiddenEntity(MyEntity entity)
+        public static bool IsForbiddenEntity(MyEntity entity)
         {
             return (entity is MyCharacter ||
                         (entity is MyCubeGrid && (entity as MyCubeGrid).IsStatic == false) ||
@@ -838,13 +1025,73 @@ namespace Sandbox.Game.Entities
         public void CreateVoxelMeteorCrater(Vector3D center, float radius, Vector3 normal, MyVoxelMaterialDefinition material)
         {
             BeforeContentChanged = true;
-            MyMultiplayer.RaiseEvent(this, x => x.CreateVoxelMeteorCrater_Implementation, center, radius, normal, material.Index);
+            MyMultiplayer.RaiseEvent(RootVoxel, x => x.CreateVoxelMeteorCrater_Implementation, center, radius, normal, material.Index);
         }
 
         [Event, Reliable, Broadcast]
-        public void CreateVoxelMeteorCrater_Implementation(Vector3D center, float radius, Vector3 normal, byte material)
+        private void CreateVoxelMeteorCrater_Implementation(Vector3D center, float radius, Vector3 normal, byte material)
         {
             MyVoxelGenerator.MakeCrater(this, new BoundingSphere(center, radius), normal, MyDefinitionManager.Static.GetVoxelMaterialDefinition(material));
         }
+
+        public void GetFilledStorageBounds(out Vector3I min, out Vector3I max)
+        {
+            min = Vector3I.MaxValue;
+            max = Vector3I.MinValue;
+
+            Vector3I sz = Size;
+
+            Vector3I SMax = Size - 1;
+
+            MyStorageData data = new MyStorageData();
+            data.Resize(Size);
+
+            Storage.ReadRange(data, MyStorageDataTypeFlags.Content, 0, Vector3I.Zero, SMax);
+
+            for (int z = 0; z < sz.Z; ++z)
+                for (int y = 0; y < sz.Y; ++y)
+                    for (int x = 0; x < sz.X; ++x)
+                    {
+                        if (data.Content(x, y, z) > MyVoxelConstants.VOXEL_ISO_LEVEL)
+                        {
+                            Vector3I l = Vector3I.Max(new Vector3I(x - 1, y - 1, z - 1), Vector3I.Zero);
+                            min = Vector3I.Min(l, min);
+
+                            Vector3I h = Vector3I.Min(new Vector3I(x + 1, y + 1, z + 1), SMax);
+                            max = Vector3I.Max(h, max);
+                        }
+                    }
+        }
+
+        public MyVoxelRangeType GetVoxelRangeTypeInBoundingBox(BoundingBoxD worldAabb)
+        {
+            Debug.Assert(Thread.CurrentThread == MySandboxGame.Static.UpdateThread);
+
+            Vector3I minCorner, maxCorner;
+            MyVoxelCoordSystems.WorldPositionToVoxelCoord(PositionLeftBottomCorner, ref worldAabb.Min, out minCorner);
+            MyVoxelCoordSystems.WorldPositionToVoxelCoord(PositionLeftBottomCorner, ref worldAabb.Max, out maxCorner);
+            minCorner += StorageMin;
+            maxCorner += StorageMin;
+
+            Storage.ClampVoxelCoord(ref minCorner);
+            Storage.ClampVoxelCoord(ref maxCorner);
+
+            return MyVoxelRangeType.MIXED;
+        }
+
+        /**
+         * Intersect the storage
+         * 
+         * @param box WorldSpace bounding box to intersect with the storage.
+         */
+        public ContainmentType IntersectStorage(ref BoundingBox box, bool lazy = true)
+        {
+            box.Transform(PositionComp.WorldMatrixInvScaled);
+
+            box.Translate(SizeInMetresHalf + StorageMin);
+
+            return Storage.Intersect(ref box, lazy);
+        }
     }
+
 }

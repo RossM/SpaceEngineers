@@ -8,26 +8,18 @@ using Sandbox.Game.World;
 using SteamSDK;
 using VRage.Utils;
 using Sandbox.Engine.Networking;
+using VRage.Network;
+using VRage;
 
 namespace Sandbox.Engine.Multiplayer
 {
     public class MyMultiplayerBattleData
     {
-        [ProtoBuf.ProtoContract]
-        [MessageId(13971, P2PMessageEnum.Reliable)]
-        public struct KeyValueDataMsg
-        {
-            [ProtoBuf.ProtoMember]
-            public MyStringHash Key;
-
-            [ProtoBuf.ProtoMember]
-            public string Value;
-        }
-
         private readonly MyMultiplayerBase m_multiplayer;
 
         private readonly Dictionary<MyStringHash, string> m_mapKeyToValue = new Dictionary<MyStringHash, string>(MyStringHash.Comparer);
 
+        private static readonly MyStringHash BattleRemainingTimeTagHash = MyStringHash.GetOrCompute(MyMultiplayer.BattleRemainingTimeTag);
         private static readonly MyStringHash BattleCanBeJoinedTagHash = MyStringHash.GetOrCompute(MyMultiplayer.BattleCanBeJoinedTag);
         private static readonly MyStringHash BattleWorldWorkshopIdTagHash = MyStringHash.GetOrCompute(MyMultiplayer.BattleWorldWorkshopIdTag);
         private static readonly MyStringHash BattleFaction1MaxBlueprintPointsTagHash = MyStringHash.GetOrCompute(MyMultiplayer.BattleFaction1MaxBlueprintPointsTag);
@@ -42,6 +34,12 @@ namespace Sandbox.Engine.Multiplayer
         private static readonly MyStringHash BattleFaction1ReadyTagHash = MyStringHash.GetOrCompute(MyMultiplayer.BattleFaction1ReadyTag);
         private static readonly MyStringHash BattleFaction2ReadyTagHash = MyStringHash.GetOrCompute(MyMultiplayer.BattleFaction2ReadyTag);
         private static readonly MyStringHash BattleTimeLimitTagHash = MyStringHash.GetOrCompute(MyMultiplayer.BattleTimeLimitTag);
+
+        public float BattleRemainingTime
+        {
+            get { return GetFloatValue(BattleRemainingTimeTagHash, 0); }
+            set { KeyValueChangedRequest(BattleRemainingTimeTagHash, value.ToString(CultureInfo.InvariantCulture)); }
+        }
 
         public bool BattleCanBeJoined
         {
@@ -130,7 +128,10 @@ namespace Sandbox.Engine.Multiplayer
         public MyMultiplayerBattleData(MyMultiplayerBase multiplayer)
         {
             m_multiplayer = multiplayer;
-            m_multiplayer.RegisterControlMessage<KeyValueDataMsg>(MyControlMessageEnum.BattleKeyValue, OnKeyValueChanged, MyMessagePermissions.FromServer);
+            if (Sync.IsServer == false)
+            {
+                multiplayer.SyncLayer.TransportLayer.Register(MyMessageId.WORLD_BATTLE_DATA, OnValueChanged);
+            }
         }
 
         private void KeyValueChangedRequest(MyStringHash key, string value)
@@ -139,11 +140,10 @@ namespace Sandbox.Engine.Multiplayer
             msg.Key = key;
             msg.Value = value;
 
-            OnKeyValueChanged(ref msg, MySteam.UserId);
-            m_multiplayer.SendControlMessageToAll(ref msg);
+            OnKeyValueChanged(ref msg);
         }
 
-        private void OnKeyValueChanged(ref KeyValueDataMsg msg, ulong sender)
+        private void OnKeyValueChanged(ref KeyValueDataMsg msg)
         {
             m_mapKeyToValue[msg.Key] = msg.Value;
         }
@@ -249,6 +249,11 @@ namespace Sandbox.Engine.Multiplayer
             }
 
             return keyValueList;
+        }
+
+        void OnValueChanged(MyPacket packet)
+        {
+
         }
 
     }

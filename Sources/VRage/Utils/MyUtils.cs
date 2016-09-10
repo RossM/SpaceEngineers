@@ -8,9 +8,11 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Xml;
 using VRageMath;
 using VRageRender;
+using System.Linq;
 
 
 namespace VRage.Utils
@@ -193,11 +195,14 @@ namespace VRage.Utils
 
         public static void CheckFloatValues(object graph, string name, ref double? min, ref double? max)
         {
+#if XB1
+            Debug.Assert(false);
+#else
             if (new StackTrace().FrameCount > 1000)
             {
                 Debug.Fail("Infinite loop?");
             }
-
+#endif
             if (graph == null) return;
 
             if (graph is float)
@@ -247,20 +252,21 @@ namespace VRage.Utils
         }
         public static void DeserializeValue(XmlReader reader, out Vector3 value)
         {
-            object val = reader.Value;
-            reader.Read();
-
-            string[] parts = ((string)val).Split(' ');
-            Vector3 v = new Vector3(Convert.ToSingle(parts[0], CultureInfo.InvariantCulture), Convert.ToSingle(parts[1], CultureInfo.InvariantCulture), Convert.ToSingle(parts[2], CultureInfo.InvariantCulture));
+            Vector3 v = new Vector3();
+            v.X = reader.ReadElementContentAsFloat();
+            v.Y = reader.ReadElementContentAsFloat();
+            v.Z = reader.ReadElementContentAsFloat();
             value = v;
         }
         public static void DeserializeValue(XmlReader reader, out Vector4 value)
         {
-            object val = reader.Value;
-            reader.Read();
+            Vector4 v = new Vector4();
 
-            string[] parts = ((string)val).Split(' ');
-            Vector4 v = new Vector4(Convert.ToSingle(parts[0], CultureInfo.InvariantCulture), Convert.ToSingle(parts[1], CultureInfo.InvariantCulture), Convert.ToSingle(parts[2], CultureInfo.InvariantCulture), Convert.ToSingle(parts[3], CultureInfo.InvariantCulture));
+            v.W = reader.ReadElementContentAsFloat();
+            v.X = reader.ReadElementContentAsFloat();
+            v.Y = reader.ReadElementContentAsFloat();
+            v.Z = reader.ReadElementContentAsFloat();
+
             value = v;
         }
         public static string FormatByteSizePrefix(ref float byteSize)
@@ -928,6 +934,10 @@ namespace VRage.Utils
         {
             return list[GetRandomInt(list.Length)];
         }
+        public static T GetRandomItemFromList<T>(this List<T> list)
+        {
+            return list[GetRandomInt(list.Count)];
+        }
         /// <summary>
         /// Calculates distance from point 'from' to boundary of 'sphere'. If point is inside the sphere, distance will be negative.
         /// </summary>
@@ -1074,7 +1084,7 @@ namespace VRage.Utils
                 {
                     //	Toto je pripad, ked sa podarilo premietnut stred gule na rovinu trojuholnika a tento priesecnik sa
                     //	nachadza vnutri trojuholnika (tzn. sedia uhly)
-                    return intersectionPoint;
+                    return (Vector3)intersectionPoint;
                 }
                 else													//	Ak sa priesecnik nenachadza v trojuholniku, este stale sa moze nachadzat na hrane trojuholnika
                 {
@@ -1355,5 +1365,17 @@ namespace VRage.Utils
                 location = new T();
             return location;
         }
-    }
+
+        public static void InterlockedMax(ref long storage, long value)
+        {
+            long localMax = Interlocked.Read(ref storage);
+            while (value > localMax)
+            {
+                Interlocked.CompareExchange(ref storage, value, localMax);
+                localMax = Interlocked.Read(ref storage);
+            }
+        }
+
+	}
+
 }

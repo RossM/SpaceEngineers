@@ -4,11 +4,18 @@ using System.Diagnostics;
 using System.Reflection;
 using VRage.Plugins;
 using VRage.Reflection;
+#if XB1 // XB1_ALLINONEASSEMBLY
+using VRage.Utils;
+#endif // XB1
 
 namespace VRage.ObjectBuilders
 {
     public struct MyObjectBuilderType
     {
+#if XB1 // XB1_ALLINONEASSEMBLY
+        private static bool m_registered = false;
+#endif // XB1
+
         public static readonly MyObjectBuilderType Invalid = new MyObjectBuilderType(null);
 
         private readonly Type m_type;
@@ -64,12 +71,13 @@ namespace VRage.ObjectBuilders
 
         public override int GetHashCode()
         {
-            return m_type.GetHashCode();
+            return m_type != null ? m_type.GetHashCode() : 0;
         }
 
         public override string ToString()
         {
-            return m_type.Name;
+            Debug.Assert(m_type != null, "m_type should not be null");
+            return m_type != null ? m_type.Name : null;
         }
 
         public static MyObjectBuilderType Parse(string value)
@@ -91,6 +99,11 @@ namespace VRage.ObjectBuilders
 
         public static bool TryParse(string value, out MyObjectBuilderType result)
         {
+            if (value == null)
+            {
+                result = MyObjectBuilderType.Invalid;
+                return false;
+            }
             return m_typeByName.TryGetValue(value, out result);
         }
 
@@ -116,22 +129,20 @@ namespace VRage.ObjectBuilders
         private static Dictionary<MyRuntimeObjectBuilderId, MyObjectBuilderType> m_typeById;
         private static Dictionary<MyObjectBuilderType, MyRuntimeObjectBuilderId> m_idByType;
         private static ushort m_idCounter;
+        private const int EXPECTED_TYPE_COUNT = 500;
 
         static MyObjectBuilderType()
         {
-            m_typeByName = new Dictionary<string,MyObjectBuilderType>(400);
-            m_typeByLegacyName = new Dictionary<string, MyObjectBuilderType>(400);
-            m_typeById = new Dictionary<MyRuntimeObjectBuilderId,MyObjectBuilderType>(400, MyRuntimeObjectBuilderId.Comparer);
-            m_idByType = new Dictionary<MyObjectBuilderType,MyRuntimeObjectBuilderId>(400, MyObjectBuilderType.Comparer);
+            m_typeByName = new Dictionary<string, MyObjectBuilderType>(EXPECTED_TYPE_COUNT);
+            m_typeByLegacyName = new Dictionary<string, MyObjectBuilderType>(EXPECTED_TYPE_COUNT);
+            m_typeById = new Dictionary<MyRuntimeObjectBuilderId, MyObjectBuilderType>(EXPECTED_TYPE_COUNT, MyRuntimeObjectBuilderId.Comparer);
+            m_idByType = new Dictionary<MyObjectBuilderType, MyRuntimeObjectBuilderId>(EXPECTED_TYPE_COUNT, MyObjectBuilderType.Comparer);
+        }
 
-            MyObjectBuilderType.RegisterFromAssembly(Assembly.GetExecutingAssembly(), registerLegacyNames: true);
-            
-            //MyObjectBuilderType.RegisterLegacyName(typeof(MyObjectBuilder_GlobalEventDefinition), "EventDefinition");
-            //MyObjectBuilderType.RegisterLegacyName(typeof(MyObjectBuilder_FactionCollection), "Factions");
-
-            MyObjectBuilderType.RegisterFromAssembly(MyPlugins.GameAssembly, true);
-            MyObjectBuilderType.RegisterFromAssembly(MyPlugins.SandboxAssembly, true); //TODO: Will be removed 
-            MyObjectBuilderType.RegisterFromAssembly(MyPlugins.UserAssembly, true);
+        // Are the types already registered?
+        public static bool IsReady()
+        {
+            return m_typeByName.Count > 0;
         }
 
         internal static void RegisterFromAssembly(Assembly assembly, bool registerLegacyNames = false)
@@ -140,11 +151,19 @@ namespace VRage.ObjectBuilders
                 return;
 
             var baseType = typeof(MyObjectBuilder_Base);
+#if XB1 // XB1_ALLINONEASSEMBLY
+            System.Diagnostics.Debug.Assert(m_registered == false);
+            if (m_registered == true)
+                return;
+            m_registered = true;
+            var types = MyAssembly.GetTypes();
+#else // !XB1
             var types = assembly.GetTypes();
+#endif // !XB1
             Array.Sort(types, FullyQualifiedNameComparer.Default);
             foreach (var type in types)
             {
-                if (baseType.IsAssignableFrom(type))
+                if (baseType.IsAssignableFrom(type) && !m_typeByName.ContainsKey(type.Name))
                 {
                     var myType = new MyObjectBuilderType(type);
                     var myId = new MyRuntimeObjectBuilderId(++m_idCounter);
@@ -175,50 +194,17 @@ namespace VRage.ObjectBuilders
             m_typeByLegacyName.Add(legacyName, type);
         }
 
-    }
-
-    [ProtoBuf.ProtoContract]
-    public struct MyRuntimeObjectBuilderId
-    {
-        [ProtoBuf.ProtoMember]
-        internal readonly ushort Value;
-
-        public MyRuntimeObjectBuilderId(ushort value)
+        public static void UnregisterAssemblies()
         {
-            Value = value;
+            if (m_typeByLegacyName != null)
+                m_typeByLegacyName.Clear();
+            if (m_typeById != null)
+                m_typeById.Clear();
+            if (m_idByType != null)
+                m_idByType.Clear();
+            if (m_typeByName != null)
+                m_typeByName.Clear();
+            m_idCounter = default(ushort);
         }
-
-        public override string ToString()
-        {
-            return string.Format("{0}: {1}", Value, (MyObjectBuilderType)this);
-        }
-
-        #region Comparer
-        public class IdComparerType : IComparer<MyRuntimeObjectBuilderId>, IEqualityComparer<MyRuntimeObjectBuilderId>
-        {
-            public int Compare(MyRuntimeObjectBuilderId x, MyRuntimeObjectBuilderId y)
-            {
-                return CompareInternal(ref x, ref y);
-            }
-
-            public bool Equals(MyRuntimeObjectBuilderId x, MyRuntimeObjectBuilderId y)
-            {
-                return CompareInternal(ref x, ref y) == 0;
-            }
-
-            public int GetHashCode(MyRuntimeObjectBuilderId obj)
-            {
-                return obj.Value.GetHashCode();
-            }
-
-            private static int CompareInternal(ref MyRuntimeObjectBuilderId x, ref MyRuntimeObjectBuilderId y)
-            {
-                return x.Value - y.Value;
-            }
-        }
-
-        public static readonly IdComparerType Comparer = new IdComparerType();
-        #endregion
-
     }
 }

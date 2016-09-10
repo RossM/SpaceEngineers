@@ -3,6 +3,7 @@
 using BulletXNA.BulletCollision;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -37,16 +38,20 @@ namespace VRage.Import
             {
                 m_tagReader = tagReader;
             }
-
+#if !XB1
             T ReadTag(BinaryReader reader, int version)
             {
                 return m_tagReader(reader, version);
             }
-
+#endif
             public object Read(BinaryReader reader, int version)
             {
-                return ReadTag(reader, version);
-            }
+#if XB1
+				return m_tagReader(reader, version);
+#else
+				return ReadTag(reader, version);
+#endif
+			}
         }
 
 
@@ -70,6 +75,7 @@ namespace VRage.Import
            { MyImporterConstants.TAG_SWAP_WINDING_ORDER, new TagReader<bool>(x => x.ReadBoolean()) },
            { MyImporterConstants.TAG_DUMMIES, new TagReader<Dictionary<string, MyModelDummy>>(ReadDummies) },
            { MyImporterConstants.TAG_MESH_PARTS, new TagReader<List<MyMeshPartInfo>>(ReadMeshParts) },
+           { MyImporterConstants.TAG_MESH_SECTIONS, new TagReader<List<MyMeshSectionInfo>>(ReadMeshSections) },
            { MyImporterConstants.TAG_MODEL_BVH, new TagReader<GImpactQuantizedBvh>(delegate(BinaryReader reader) 
                {
                    GImpactQuantizedBvh bvh = new GImpactQuantizedBvh(); 
@@ -484,6 +490,19 @@ namespace VRage.Import
             return list;
         }
 
+        static List<MyMeshSectionInfo> ReadMeshSections(BinaryReader reader, int version)
+        {
+            List<MyMeshSectionInfo> list = new List<MyMeshSectionInfo>();
+            int nCount = reader.ReadInt32();
+            for (int i = 0; i < nCount; ++i)
+            {
+                MyMeshSectionInfo meshPart = new MyMeshSectionInfo();
+                meshPart.Import(reader, version);
+                list.Add(meshPart);
+            }
+
+            return list;
+        }
 
         /// <summary>
         /// ReadDummies
@@ -501,6 +520,7 @@ namespace VRage.Import
                 Matrix mat = ReadMatrix(reader);
 
                 MyModelDummy dummy = new MyModelDummy();
+                dummy.Name = str;
                 dummy.Matrix = mat;
                 dummy.CustomData = new Dictionary<string, object>();
 
@@ -568,9 +588,9 @@ namespace VRage.Import
         private const float TinyCosAngle = 0.9999999f;
 
 
-        static AnimationClip ReadClip(BinaryReader reader)
+        static MyAnimationClip ReadClip(BinaryReader reader)
         {
-            AnimationClip clip = new AnimationClip();
+            MyAnimationClip clip = new MyAnimationClip();
 
             clip.Name = reader.ReadString();
             clip.Duration = reader.ReadDouble();
@@ -578,13 +598,13 @@ namespace VRage.Import
             int bonesCount = reader.ReadInt32();
             while (bonesCount-- > 0)
             {
-                AnimationClip.Bone bone = new AnimationClip.Bone();
+                MyAnimationClip.Bone bone = new MyAnimationClip.Bone();
                 bone.Name = reader.ReadString();
 
                 int keyframesCount = reader.ReadInt32();
                 while (keyframesCount-- > 0)
                 {
-                    AnimationClip.Keyframe keyframe = new AnimationClip.Keyframe();
+                    MyAnimationClip.Keyframe keyframe = new MyAnimationClip.Keyframe();
                     keyframe.Time = reader.ReadDouble();
                     keyframe.Rotation = ImportQuaternion(reader);
                     keyframe.Translation = ImportVector3(reader);
@@ -599,7 +619,7 @@ namespace VRage.Import
                 {
                     if (USE_LINEAR_KEYFRAME_REDUCTION)
                     {
-                        LinkedList<AnimationClip.Keyframe> linkedList = new LinkedList<AnimationClip.Keyframe>();
+                        LinkedList<MyAnimationClip.Keyframe> linkedList = new LinkedList<MyAnimationClip.Keyframe>();
                         foreach (var kf in bone.Keyframes)
                         {
                             linkedList.AddLast(kf);
@@ -639,7 +659,7 @@ namespace VRage.Import
         }
 
 
-        static void PercentageKeyframeReduction(LinkedList<AnimationClip.Keyframe> keyframes, float ratio)
+        static void PercentageKeyframeReduction(LinkedList<MyAnimationClip.Keyframe> keyframes, float ratio)
         {
             if (keyframes.Count < 3)
                 return;
@@ -652,9 +672,9 @@ namespace VRage.Import
 
             float d = (float)toRemove / keyframes.Count;
 
-            for (LinkedListNode<AnimationClip.Keyframe> node = keyframes.First.Next; ; )
+            for (LinkedListNode<MyAnimationClip.Keyframe> node = keyframes.First.Next; ; )
             {
-                LinkedListNode<AnimationClip.Keyframe> next = node.Next;
+                LinkedListNode<MyAnimationClip.Keyframe> next = node.Next;
                 if (next == null)
                     break;
 
@@ -681,21 +701,21 @@ namespace VRage.Import
         /// linear interpolation.
         /// </summary>
         /// <param name="keyframes"></param>
-        static void LinearKeyframeReduction(LinkedList<AnimationClip.Keyframe> keyframes, float translationThreshold, float rotationThreshold)
+        static void LinearKeyframeReduction(LinkedList<MyAnimationClip.Keyframe> keyframes, float translationThreshold, float rotationThreshold)
         {
             if (keyframes.Count < 3)
                 return;
 
-            for (LinkedListNode<AnimationClip.Keyframe> node = keyframes.First.Next; ; )
+            for (LinkedListNode<MyAnimationClip.Keyframe> node = keyframes.First.Next; ; )
             {
-                LinkedListNode<AnimationClip.Keyframe> next = node.Next;
+                LinkedListNode<MyAnimationClip.Keyframe> next = node.Next;
                 if (next == null)
                     break;
 
                 // Determine nodes before and after the current node.
-                AnimationClip.Keyframe a = node.Previous.Value;
-                AnimationClip.Keyframe b = node.Value;
-                AnimationClip.Keyframe c = next.Value;
+                MyAnimationClip.Keyframe a = node.Previous.Value;
+                MyAnimationClip.Keyframe b = node.Value;
+                MyAnimationClip.Keyframe c = next.Value;
 
                 float t = (float)((node.Value.Time - node.Previous.Value.Time) /
                                    (next.Value.Time - node.Previous.Value.Time));
@@ -713,8 +733,9 @@ namespace VRage.Import
             }
         }
 
-        static void CalculateKeyframeDeltas(List<AnimationClip.Keyframe> keyframes)
+        static void CalculateKeyframeDeltas(List<MyAnimationClip.Keyframe> keyframes)
         {
+            // rest of frames
             for (int i = 1; i < keyframes.Count; i++)
             {
                 var previousKey = keyframes[i - 1];
@@ -722,7 +743,7 @@ namespace VRage.Import
 
                 System.Diagnostics.Debug.Assert(previousKey.Time < currentKey.Time, "Incorrect keyframes timing!");
 
-                currentKey.TimeDiff = 1.0f / (currentKey.Time - previousKey.Time);
+                currentKey.InvTimeDiff = 1.0f / (currentKey.Time - previousKey.Time);
             }
         }
 
@@ -869,11 +890,14 @@ namespace VRage.Import
 
             using (var fs = MyFileSystem.OpenRead(path))
             {
-                using (BinaryReader reader = new BinaryReader(fs))
+                if (fs != null)
                 {
-                    LoadTagData(reader, tags);
+                    using (BinaryReader reader = new BinaryReader(fs))
+                    {
+                        LoadTagData(reader, tags);
+                    }
+                    fs.Close(); // OM: Although this shouldn't be needed, we experience problems with opening files with autorefresh, is this isn't called explicitely..
                 }
-                fs.Close(); // OM: Although this shouldn't be needed, we experience problems with opening files with autorefresh, is this isn't called explicitely..
             }
         }
 
@@ -883,11 +907,10 @@ namespace VRage.Import
             m_version = 0;
         }
 
-        private bool LoadTagData(BinaryReader reader, string[] tags)
+        private void LoadTagData(BinaryReader reader, string[] tags)
         {
             //m_retTagData
-            string tagName;
-            tagName = reader.ReadString();
+            string tagName = reader.ReadString();
             string[] strArr = ReadArrayOfString(reader);
             m_retTagData.Add(tagName, strArr);
 
@@ -921,8 +944,6 @@ namespace VRage.Import
             }
             else
                 LoadOldVersion(reader);
-
-            return true;
         }
 
         Dictionary<string, int> ReadIndexDictionary(BinaryReader reader)

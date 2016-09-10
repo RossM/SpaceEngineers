@@ -7,6 +7,8 @@ using Sandbox.Engine.Utils;
 using Sandbox.Game.World;
 using System.Collections.Generic;
 using System.Diagnostics;
+using VRage.Game;
+using VRage.Game.Models;
 using VRage.Import;
 using VRageMath;
 using VRageRender;
@@ -133,7 +135,7 @@ namespace Sandbox.Game.Entities.Cube
             m_tmpInstanceData.Clear();
         }
 
-        public void UpdateRenderEntitiesData(MatrixD gridWorldMatrix, bool useTransparency)
+        public void UpdateRenderEntitiesData(MatrixD gridWorldMatrix, bool useTransparency, float rescale=1)
         {
             // Create/Remove/Update render objects
             foreach (var item in m_instanceInfo)
@@ -157,8 +159,9 @@ namespace Sandbox.Game.Entities.Cube
                         CullingOptions.Default,
                         Vector3.One,
 						MyPlayer.SelectedColor,
-                        useTransparency ? Transparency : 0,
-                        item.Value.MaxViewDistance
+                        dithering: useTransparency ? Transparency : 0,
+                        maxViewDistance: item.Value.MaxViewDistance,
+                        rescale: rescale
                     );
 
                     m_instanceGroupRenderObjects[item.Key] = renderObjectId;

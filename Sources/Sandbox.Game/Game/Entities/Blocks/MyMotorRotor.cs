@@ -1,72 +1,28 @@
 ﻿using Sandbox.Common.ObjectBuilders;
+using Sandbox.Game.Entities.Blocks;
 using Sandbox.Game.Multiplayer;
+using Sandbox.ModAPI;
+using VRage.Game;
+using VRage.Game.Models;
 using VRageMath;
 
 namespace Sandbox.Game.Entities.Cube
 {
     [MyCubeBlockType(typeof(MyObjectBuilder_MotorRotor))]
-    public class MyMotorRotor : MyCubeBlock
+    public class MyMotorRotor : MyAttachableTopBlockBase, IMyMotorRotor
     {
-        public Vector3 DummyPosLoc { get; private set; }
+        public MyMechanicalConnectionBlockBase Stator { get { return m_parentBlock; } }
 
-        private MyMotorBase m_statorBlock;
-        private long m_statorBlockId;
-
-        public MyMotorBase Stator { get { return m_statorBlock; } }
-
-        public override void Init(MyObjectBuilder_CubeBlock builder, MyCubeGrid cubeGrid)
+        #region ModAPI implementation
+        ModAPI.IMyMotorBase ModAPI.IMyMotorRotor.Stator
         {
-            var rotorOb = builder as MyObjectBuilder_MotorRotor;
-
-            base.Init(builder, cubeGrid);
-
-            LoadDummies();
+            get { return Stator as MyMotorStator; }
         }
 
-        private void LoadDummies()
+        bool ModAPI.Ingame.IMyMotorRotor.IsAttached
         {
-            var finalModel = Engine.Models.MyModels.GetModelOnlyDummies(BlockDefinition.Model);
-            foreach (var dummy in finalModel.Dummies)
-            {
-                if (dummy.Key.ToLower().Contains("wheel"))
-                {
-                    Matrix dummyLocal = Matrix.Normalize(dummy.Value.Matrix) * this.PositionComp.LocalMatrix;
-                    DummyPosLoc = dummyLocal.Translation;
-                    break;
-                }
-            }
+            get { return Stator != null; }
         }
-
-        internal void Attach(MyMotorBase stator)
-        {
-            m_statorBlock = stator;
-        }
-
-        internal void Detach()
-        {
-            m_statorBlock = null;
-        }
-
-        public override void OnUnregisteredFromGridSystems()
-        {
-            if (m_statorBlock != null)
-            {
-                m_statorBlock.Detach();
-            }
-            base.OnUnregisteredFromGridSystems();
-        }
-
-        public override void OnRemovedByCubeBuilder()
-        {
-            if (m_statorBlock != null)
-            {
-                var tmpStatorBlock = m_statorBlock;
-                m_statorBlock.Detach(); // This will call our detach and set m_statorBlock to null
-                if (Sync.IsServer)
-                    tmpStatorBlock.CubeGrid.RemoveBlock(tmpStatorBlock.SlimBlock, updatePhysics: true);
-            }
-            base.OnRemovedByCubeBuilder();
-        }
-
+        #endregion
     }
 }

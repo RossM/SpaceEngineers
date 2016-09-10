@@ -1,8 +1,7 @@
-﻿using Sandbox.Common;
-using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Text;
 using VRage;
+using VRage.Game;
 using VRage.Library.Utils;
 using VRage.Utils;
 using VRageMath;
@@ -18,6 +17,15 @@ namespace Sandbox.Graphics.GUI
     [MyGuiControlType(typeof(MyObjectBuilder_GuiControlLabel))]
     public class MyGuiControlLabel : MyGuiControlBase
     {
+        public class StyleDefinition
+        {
+            public MyFontEnum Font = MyFontEnum.Blue;
+            public Vector4 ColorMask = Vector4.One;
+            public float TextScale = MyGuiConstants.DEFAULT_TEXT_SCALE;
+        }
+
+        private StyleDefinition m_styleDefinition;
+
         private MyFontEnum m_font;
         /// <summary>
         /// Font used for drawing. Setting null will switch to default font (ie. this never returns null).
@@ -181,6 +189,18 @@ namespace Sandbox.Graphics.GUI
             MyGuiManager.DrawString(Font, TextForDraw, GetPositionAbsolute(), TextScaleWithLanguage, ApplyColorMaskModifiers(ColorMask, Enabled, transitionAlpha), OriginAlign, maxTextWidth: maxWidth);
         }
 
+        /// <summary>
+        /// Inserts newlines into text to make it fit size.
+        /// Works only on TextToDraw.
+        /// </summary>
+        public void Autowrap(float width)
+        {
+            if(TextToDraw != null)
+            {
+                TextToDraw.Autowrap(width, Font, TextScaleWithLanguage);
+            }
+        }
+
         public Vector2 GetTextSize()
         {
             return MyGuiManager.MeasureString(Font, TextForDraw, TextScaleWithLanguage);
@@ -220,7 +240,27 @@ namespace Sandbox.Graphics.GUI
 
         public void RecalculateSize()
         {
+            RefreshInternals();
             Size = GetTextSize();
+        }
+
+        public void RefreshInternals()
+        {
+            if (m_styleDefinition == null)
+                return;
+
+            Font = m_styleDefinition.Font;
+            ColorMask = m_styleDefinition.ColorMask;
+            TextScale = m_styleDefinition.TextScale;
+        }
+
+        public void ApplyStyle(StyleDefinition style)
+        {
+            if (style != null)
+            {
+                m_styleDefinition = style;
+                RefreshInternals();
+            }
         }
     }
 }

@@ -1,4 +1,6 @@
-﻿using Sandbox.Engine.Platform;
+﻿#if !XB1
+
+using Sandbox.Engine.Platform;
 using Sandbox.Engine.Utils;
 using System;
 using System.Collections.Generic;
@@ -16,6 +18,8 @@ namespace Sandbox
     {
         private bool m_showCursor = true;
         private bool m_isCursorVisible = true;
+
+        private bool m_captureMouse = true;
 
         private bool IsCursorVisible
         {
@@ -84,7 +88,7 @@ namespace Sandbox
 
         private void SetClip()
         {
-            Cursor.Clip = this.RectangleToScreen(this.ClientRectangle);
+            Cursor.Clip = this.RectangleToScreen(ClientRectangle);
         }
 
         private static void ClearClip()
@@ -92,15 +96,21 @@ namespace Sandbox
             Cursor.Clip = System.Drawing.Rectangle.Empty;
         }
 
-        private void UpdateClip()
+        public void UpdateClip()
         {
+            MySandboxGame.GameWindowHandle = Handle;
             // TODO: OP! Some old implementation, try finding something more safe
             Control c = Control.FromHandle(WinApi.GetForegroundWindow());
 
             bool isActive = false;
 
             if (c != null)
-                isActive = Handle == c.TopLevelControl.Handle;
+            {
+                isActive = !c.TopLevelControl.InvokeRequired &&
+                           Handle == c.TopLevelControl.Handle;
+            }
+
+            isActive = isActive && (m_captureMouse || !m_isCursorVisible);
 
             if (isActive)
                 SetClip();
@@ -111,6 +121,12 @@ namespace Sandbox
         public bool DrawEnabled
         {
             get { return WindowState != FormWindowState.Minimized; }
+        }
+
+        public void SetMouseCapture(bool capture)
+        {
+            m_captureMouse = capture;
+            UpdateClip();
         }
 
         public void OnModeChanged(VRageRender.MyWindowModeEnum windowMode, int width, int height)
@@ -150,6 +166,8 @@ namespace Sandbox
             // TODO: OP! Should be on different place
             Show();
             Activate();
+
+            MySandboxGame.Static.UpdateMouseCapture();
         }
         
         private void InitializeComponent()
@@ -175,3 +193,5 @@ namespace Sandbox
         }
     }
 }
+
+#endif

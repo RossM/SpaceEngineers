@@ -12,16 +12,25 @@ using Sandbox.Common.ObjectBuilders;
 using Sandbox.Common.ObjectBuilders.Definitions;
 using Sandbox.Game.Weapons;
 using System.Diagnostics;
+using VRage.Game;
+using VRage.Game.Entity;
 
 namespace Sandbox.Game.Screens.Helpers
 {
     [MyToolbarItemDescriptor(typeof(MyObjectBuilder_ToolbarItemWeapon))]
     public class MyToolbarItemWeapon : MyToolbarItemDefinition
     {
-        private int m_lastAmmoCount = -1;
-        private bool m_needsWeaponSwitching = true;
+        protected int m_lastAmmoCount = -1;
+        protected bool m_needsWeaponSwitching = true;
+        protected string m_lastTextValue = String.Empty;
 
-        public MyToolbarItemWeapon() : base()
+        public int AmmoCount
+        {
+            get { return m_lastAmmoCount; }
+        }
+
+        public MyToolbarItemWeapon()
+            : base()
         {
         }
 
@@ -29,51 +38,41 @@ namespace Sandbox.Game.Screens.Helpers
         {
             bool init = base.Init(data);
             ActivateOnClick = false;
-
-			var objectBuilder = data as MyObjectBuilder_ToolbarItemWeapon;
-			
             return init;
         }
 
-		public override bool Equals(object obj)
-		{
-			bool returnValue = base.Equals(obj);
+        public override bool Equals(object obj)
+        {
+            bool returnValue = base.Equals(obj);
 
-			if(returnValue)
-			{
-				var otherObj = obj as MyToolbarItemWeapon;
-				if (otherObj == null)
-					returnValue = false;
-			}
-			return returnValue;
-		}
+            if (returnValue)
+            {
+                var otherObj = obj as MyToolbarItemWeapon;
+                if (otherObj == null)
+                    returnValue = false;
+            }
+            return returnValue;
+        }
 
-		public override MyObjectBuilder_ToolbarItem GetObjectBuilder()
-		{
-			var builder = (MyObjectBuilder_ToolbarItemWeapon)base.GetObjectBuilder();
+        public override MyObjectBuilder_ToolbarItem GetObjectBuilder()
+        {
+            var builder = (MyObjectBuilder_ToolbarItemWeapon)base.GetObjectBuilder();
 
-			return builder;
-		}
+            return builder;
+        }
 
         public override bool Activate()
         {
             if (Definition == null)
                 return false;
 
-            if (MyFakes.OCTOBER_RELEASE_DISABLE_WEAPONS_AND_TOOLS &&
-                (Definition.Id.TypeId == typeof(MyObjectBuilder_PhysicalGunObject) && MyFakes.OCTOBER_RELEASE_DISABLED_HANDHELD_WEAPONS.Contains(Definition.Id.SubtypeName)))
-            {
-                MyHud.Notifications.Add(MyNotificationSingletons.DisabledWeaponsAndTools);
-                return false;
-            }
-            
-            var controlledObject = MySession.ControlledEntity as IMyControllableEntity;
+            var controlledObject = MySession.Static.ControlledEntity as IMyControllableEntity;
             if (controlledObject != null)
             {
                 if (m_needsWeaponSwitching)
                 {
                     controlledObject.SwitchToWeapon(this);
-                    WantsToBeActivated = false;
+                    WantsToBeActivated = true; //by Gregory: changed to true because of 'Toolbar switching not working correctly' bug
                 }
                 else
                 {
@@ -93,8 +92,8 @@ namespace Sandbox.Game.Screens.Helpers
         {
             bool thisWeaponIsCurrent = false;
             bool shipHasThisWeapon = false;
-            var character = MySession.LocalCharacter;
-            bool characterHasThisWeapon = character != null && character.GetInventory() != null && (character.GetInventory().ContainItems(1, Definition.Id) || !character.WeaponTakesBuilderFromInventory(Definition.Id));
+            var character = MySession.Static.LocalCharacter;
+            bool characterHasThisWeapon = character != null && (character.FindWeaponItemByDefinition(Definition.Id).HasValue || !character.WeaponTakesBuilderFromInventory(Definition.Id));
             ChangeInfo changed = ChangeInfo.None;
 
             if (characterHasThisWeapon)
@@ -102,7 +101,7 @@ namespace Sandbox.Game.Screens.Helpers
                 var currentWeapon = character.CurrentWeapon;
                 if (currentWeapon != null)
                     thisWeaponIsCurrent = (MyDefinitionManager.Static.GetPhysicalItemForHandItem(currentWeapon.DefinitionId).Id == Definition.Id);
-                if (character.LeftHandItem != null) 
+                if (character.LeftHandItem != null)
                     thisWeaponIsCurrent |= Definition == character.LeftHandItem.PhysicalItemDefinition;
                 if (thisWeaponIsCurrent && currentWeapon != null)
                 {
@@ -120,11 +119,11 @@ namespace Sandbox.Game.Screens.Helpers
                 }
             }
 
-            var shipControler = MySession.ControlledEntity as MyShipController;
+            var shipControler = MySession.Static.ControlledEntity as MyShipController;
             if (shipControler != null && shipControler.GridSelectionSystem.WeaponSystem != null)
             {
-            //    var shipWeaponType = shipControler.GetWeaponType(Definition.Id.TypeId);
-            //    shipHasThisWeapon = shipWeaponType.HasValue && shipControler.GridSelectionSystem.WeaponSystem.HasGunsOfId(shipWeaponType.Value);
+                //    var shipWeaponType = shipControler.GetWeaponType(Definition.Id.TypeId);
+                //    shipHasThisWeapon = shipWeaponType.HasValue && shipControler.GridSelectionSystem.WeaponSystem.HasGunsOfId(shipWeaponType.Value);
                 shipHasThisWeapon = shipControler.GridSelectionSystem.WeaponSystem.HasGunsOfId(Definition.Id);
                 if (shipHasThisWeapon)
                 {
@@ -151,6 +150,14 @@ namespace Sandbox.Game.Screens.Helpers
             changed |= SetEnabled(characterHasThisWeapon || shipHasThisWeapon);
             WantsToBeSelected = thisWeaponIsCurrent;
             m_needsWeaponSwitching = !thisWeaponIsCurrent;
+
+            // Detecting external change of the text..
+            if (m_lastTextValue != IconText.ToString())
+            {
+                changed |= ChangeInfo.IconText;
+            }
+            m_lastTextValue = IconText.ToString();
+
             return changed;
         }
     }

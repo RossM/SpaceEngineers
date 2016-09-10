@@ -10,20 +10,18 @@ using Sandbox.Game.World;
 using VRage.Utils;
 using VRage.ObjectBuilders;
 using VRageMath;
-using VRage.Components;
+using VRage.Game.Components;
+using System;
+using VRage.Game.Entity;
+using VRage.Game;
+using VRage.Network;
+using Sandbox.Engine.Multiplayer;
 
 namespace Sandbox.Game.GameSystems.Electricity
 {
+    [StaticEventOwner]
     public class MyBattery
     {
-        internal class Friend
-        {
-            protected static void OnSyncCapacitySuccess(MyBattery battery, float remainingCapacity)
-            {
-                battery.SyncCapacitySuccess(remainingCapacity);
-            }
-        }
-
 		private int m_lastUpdateTime;
 
         private MyEntity m_lastParent = null;
@@ -31,13 +29,13 @@ namespace Sandbox.Game.GameSystems.Electricity
         public const float EnergyCriticalThreshold = 0.10f;
         public const float EnergyLowThreshold = 0.25f;
 
+        private const int m_productionUpdateInterval = 100;
+
         public bool IsEnergyCritical { get { return (ResourceSource.RemainingCapacity / MyEnergyConstants.BATTERY_MAX_CAPACITY) < EnergyCriticalThreshold; } }
         public bool IsEnergyLow { get { return (ResourceSource.RemainingCapacity / MyEnergyConstants.BATTERY_MAX_CAPACITY) < EnergyLowThreshold; } }
 
         private readonly MyCharacter m_owner;
 		public MyCharacter Owner { get { return m_owner; } }
-
-        internal readonly MySyncBattery SyncObject;
 
         public MyResourceSinkComponent ResourceSink { get; private set; }
 	    public MyResourceSourceComponent ResourceSource { get; private set; }
@@ -50,7 +48,6 @@ namespace Sandbox.Game.GameSystems.Electricity
         public MyBattery(MyCharacter owner)
         {
             m_owner = owner;
-            SyncObject = new MySyncBattery(this);
 			ResourceSink = new MyResourceSinkComponent();
 			ResourceSource = new MyResourceSourceComponent();
         }
@@ -61,7 +58,7 @@ namespace Sandbox.Game.GameSystems.Electricity
             {
                 MaxRequiredInput = MyEnergyConstants.BATTERY_MAX_POWER_INPUT,
                 ResourceTypeId = MyResourceDistributorComponent.ElectricityId,
-                RequiredInputFunc = () => (ResourceSource.RemainingCapacity < MyEnergyConstants.BATTERY_MAX_CAPACITY) ? MyEnergyConstants.BATTERY_MAX_POWER_INPUT : 0f,
+                RequiredInputFunc = Sink_ComputeRequiredPower,
             };
 
             if (additionalSinks != null)
@@ -119,7 +116,15 @@ namespace Sandbox.Game.GameSystems.Electricity
 			return builder;
 		}
 
-		public void UpdateOnServer()
+        public float Sink_ComputeRequiredPower()
+        {
+            float inputRequiredToFillIn100Updates = (MyEnergyConstants.BATTERY_MAX_CAPACITY - ResourceSource.RemainingCapacityByType(MyResourceDistributorComponent.ElectricityId)) * VRage.Game.MyEngineConstants.UPDATE_STEPS_PER_SECOND / m_productionUpdateInterval * ResourceSource.ProductionToCapacityMultiplierByType(MyResourceDistributorComponent.ElectricityId);
+            float currentOutput = ResourceSource.CurrentOutputByType(MyResourceDistributorComponent.ElectricityId);
+            currentOutput *= MySession.Static.CreativeMode ? 0f : 1f;
+            return Math.Min(inputRequiredToFillIn100Updates + currentOutput, MyEnergyConstants.BATTERY_MAX_POWER_INPUT);
+        }
+
+		public void UpdateOnServer100()
 		{
 			if (!Sync.IsServer)
 				return;
@@ -134,7 +139,7 @@ namespace Sandbox.Game.GameSystems.Electricity
 
 		    if (ResourceSource.HasCapacityRemainingByType(MyResourceDistributorComponent.ElectricityId) || ResourceSink.RequiredInputByType(MyResourceDistributorComponent.ElectricityId) > 0.0f)
 			{
-                float secondsSinceLastUpdate = (MySession.Static.GameplayFrameCounter - m_lastUpdateTime)*MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
+                float secondsSinceLastUpdate = (MySession.Static.GameplayFrameCounter - m_lastUpdateTime) * MyEngineConstants.UPDATE_STEP_SIZE_IN_SECONDS;
                 m_lastUpdateTime = MySession.Static.GameplayFrameCounter;
                 var productionToCapacity = ResourceSource.ProductionToCapacityMultiplierByType(MyResourceDistributorComponent.ElectricityId);
                 float consumptionPerSecond = ResourceSource.CurrentOutputByType(MyResourceDistributorComponent.ElectricityId) / productionToCapacity;
@@ -148,14 +153,20 @@ namespace Sandbox.Game.GameSystems.Electricity
 
 			if (!ResourceSource.HasCapacityRemainingByType(MyResourceDistributorComponent.ElectricityId))
                 ResourceSink.Update();
-           
-            SyncObject.SendCapacitySync(Owner, ResourceSource.RemainingCapacityByType(MyResourceDistributorComponent.ElectricityId));
+
+            MyMultiplayer.RaiseStaticEvent(s => MyBattery.SyncCapacitySuccess, Owner.EntityId, ResourceSource.RemainingCapacityByType(MyResourceDistributorComponent.ElectricityId));
 		}
 
-		internal void SyncCapacitySuccess(float remainingCapacity)
-		{
-			ResourceSource.SetRemainingCapacityByType(MyResourceDistributorComponent.ElectricityId, remainingCapacity);
-		}
+        [Event, Reliable, Server, Broadcast]
+        private static void SyncCapacitySuccess(long entityId, float remainingCapacity)
+        {
+            MyCharacter owner;
+            MyEntities.TryGetEntityById(entityId, out owner);
+            if (owner == null)
+                return;
+
+            owner.SuitBattery.ResourceSource.SetRemainingCapacityByType(MyResourceDistributorComponent.ElectricityId, remainingCapacity);
+        }
 
         public void DebugDepleteBattery()
         {

@@ -10,6 +10,9 @@ namespace VRage.Voxels
     /// Functions for transforming to and from various coordinate systems in voxel maps and for computing bounding boxes of various types of cells.
     /// Note that local and world positions are (and should be) always in the min-corner!
     /// </summary>
+    /// 
+    /// TODO: Review this whole class
+    /// These are half wrong/ don't consider world matrix, beware
     public static class MyVoxelCoordSystems
     {
         public static void WorldPositionToLocalPosition(Vector3D worldPosition, MatrixD worldMatrix, MatrixD worldMatrixInv, Vector3 halfSize, out Vector3D localPosition)
@@ -50,7 +53,13 @@ namespace VRage.Voxels
             Vector3D tmp = localPosition / RenderCellSizeInMeters(lod);
             Vector3I.Floor(ref tmp, out renderCellCoord);
         }
-
+        
+        public static void WorldPositionToVoxelCoord(ref Vector3D worldPosition, MatrixD worldMatrix, MatrixD worldMatrixInv, Vector3 halfSize, out Vector3I voxelCoord)
+        {
+            Vector3D localPosition;
+            WorldPositionToLocalPosition(worldPosition, worldMatrix, worldMatrixInv, halfSize, out localPosition);
+            LocalPositionToVoxelCoord(ref localPosition, out voxelCoord);
+        }
 
         public static void WorldPositionToVoxelCoord(Vector3D referenceVoxelMapPosition, ref Vector3D worldPosition, out Vector3I voxelCoord)
         {
@@ -78,6 +87,11 @@ namespace VRage.Voxels
         public static void VoxelCoordToLocalPosition(ref Vector3I voxelCoord, out Vector3D localPosition)
         {
             localPosition = voxelCoord * MyVoxelConstants.VOXEL_SIZE_IN_METRES;
+        }
+
+        public static void GeometryCellCoordToLocalPosition(ref MyCellCoord geometryCellCoord, out Vector3D localPosition)
+        {
+            localPosition = geometryCellCoord.CoordInLod * MyVoxelConstants.GEOMETRY_CELL_SIZE_IN_METRES * (1 << geometryCellCoord.Lod);
         }
 
         public static void GeometryCellCoordToLocalPosition(ref Vector3I geometryCellCoord, out Vector3D localPosition)
@@ -134,6 +148,22 @@ namespace VRage.Voxels
             GeometryCellCoordToLocalPosition(ref geometryCellCoord, out center);
             LocalPositionToWorldPosition(referenceVoxelMapPosition, ref center, out center);
             worldAABB = new BoundingBoxD(center, center + MyVoxelConstants.GEOMETRY_CELL_SIZE_IN_METRES);
+        }
+
+        public static void GeometryCellCoordToWorldAABB(Vector3D referenceVoxelMapPosition, ref MyCellCoord geometryCellCoord, out BoundingBoxD worldAABB)
+        {
+            Vector3D center;
+            GeometryCellCoordToLocalPosition(ref geometryCellCoord, out center);
+            LocalPositionToWorldPosition(referenceVoxelMapPosition, ref center, out center);
+            worldAABB = new BoundingBoxD(center, center + MyVoxelConstants.GEOMETRY_CELL_SIZE_IN_METRES * (1 << geometryCellCoord.Lod));
+        }
+
+        public static void GeometryCellCenterCoordToWorldPos(Vector3D referenceVoxelMapPosition, ref Vector3I geometryCellCoord, out Vector3D worldPos)
+        {
+            Vector3D cellPos;
+            GeometryCellCoordToLocalPosition(ref geometryCellCoord, out cellPos);
+            LocalPositionToWorldPosition(referenceVoxelMapPosition, ref cellPos, out cellPos);
+            worldPos = cellPos + MyVoxelConstants.GEOMETRY_CELL_SIZE_IN_METRES * 0.5;
         }
 
         public static void RenderCellCoordToWorldAABB(Vector3D referenceVoxelMapPosition, ref MyCellCoord renderCell, out BoundingBoxD worldAABB)

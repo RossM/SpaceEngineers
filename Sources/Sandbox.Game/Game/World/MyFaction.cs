@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Linq;
 using Sandbox.Engine.Utils;
 using VRage.Collections;
 using Sandbox.Game.Entities;
@@ -9,6 +10,9 @@ using Sandbox.Game.Multiplayer;
 using Sandbox.Common;
 using System.Diagnostics;
 using Sandbox.ModAPI;
+using Sandbox.Definitions;
+using VRage.Game;
+using VRage.Game.ModAPI;
 
 
 namespace Sandbox.Game.World
@@ -28,6 +32,7 @@ namespace Sandbox.Game.World
 
         public bool AutoAcceptMember;
         public bool AutoAcceptPeace;
+        public bool AcceptHumans;
         public bool EnableFriendlyFire = true;
 
         public DictionaryReader<long, MyFactionMember> Members      { get { return new DictionaryReader<long, MyFactionMember>(m_members); } }
@@ -44,6 +49,7 @@ namespace Sandbox.Game.World
 
             AutoAcceptMember = false;
             AutoAcceptPeace  = false;
+            AcceptHumans = true;
 
             m_members      = new Dictionary<long, MyFactionMember>();
             m_joinRequests = new Dictionary<long, MyFactionMember>();
@@ -62,6 +68,7 @@ namespace Sandbox.Game.World
             AutoAcceptMember = obj.AutoAcceptMember;
             AutoAcceptPeace  = obj.AutoAcceptPeace;
             EnableFriendlyFire = obj.EnableFriendlyFire;
+            AcceptHumans = obj.AcceptHumans;
 
             m_members = new Dictionary<long, MyFactionMember>(obj.Members.Count);
 
@@ -83,6 +90,19 @@ namespace Sandbox.Game.World
             {
                 m_joinRequests = new Dictionary<long, MyFactionMember>();
             }
+
+            // Fix the faction settings if it was created from definition
+            var factionDef = MyDefinitionManager.Static.TryGetFactionDefinition(Tag);
+            if (factionDef != null)
+            {
+                AutoAcceptMember = factionDef.AutoAcceptMember;
+                AcceptHumans = factionDef.AcceptHumans;
+                EnableFriendlyFire = factionDef.EnableFriendlyFire;
+                Name = factionDef.DisplayNameText;
+                Description = factionDef.DescriptionText;
+            }
+
+            CheckAndFixFactionRanks();
         }
 
         public bool IsFounder(long playerId)
@@ -120,11 +140,16 @@ namespace Sandbox.Game.World
 
             return false;
         }
+
         public bool IsEveryoneNpc()
         {
-            foreach(var member in m_members)
+            foreach (var member in m_members)
+            {
                 if (!Sync.Players.IdentityIsNpc(member.Key))
+                {
                     return false;
+                }
+            }
             return true;
         }
 
@@ -141,7 +166,7 @@ namespace Sandbox.Game.World
 
         public void AcceptJoin(long playerId)
         {
-            MySession.Static.Factions.AddPlayerToFaction(playerId, FactionId);
+            MySession.Static.Factions.AddPlayerToFactionInternal(playerId, FactionId);
 
             if (m_joinRequests.ContainsKey(playerId))
             {
@@ -156,6 +181,7 @@ namespace Sandbox.Game.World
         {
             m_members.Remove(playerId);
             MySession.Static.Factions.KickPlayerFromFaction(playerId);
+            CheckAndFixFactionRanks();
         }
 
         public void PromoteMember(long playerId)
@@ -178,6 +204,45 @@ namespace Sandbox.Game.World
             }
         }
 
+        public void PromoteToFounder(long playerId)
+        {
+            MyFactionMember memberToPromote;
+            if (m_members.TryGetValue(playerId, out memberToPromote))
+            {
+                memberToPromote.IsLeader = true;
+                memberToPromote.IsFounder = true;
+                m_members[playerId] = memberToPromote;
+                FounderId = playerId;
+            }
+        }
+
+        public void CheckAndFixFactionRanks()
+        {
+            if (HasFounder())
+                return;
+                        
+            foreach (var member in m_members)
+            {
+                if (member.Value.IsLeader)
+                {
+                    PromoteToFounder(member.Key);
+                    return;
+                }
+            }
+
+            if (m_members.Count > 0)
+                PromoteToFounder(m_members.Keys.FirstOrDefault());
+        }
+
+        private bool HasFounder()
+        {
+            MyFactionMember founder;
+            if (m_members.TryGetValue(FounderId, out founder))
+            {
+                return founder.IsFounder;
+            }
+            return false;
+        }
 
         public MyObjectBuilder_Faction GetObjectBuilder()
         {

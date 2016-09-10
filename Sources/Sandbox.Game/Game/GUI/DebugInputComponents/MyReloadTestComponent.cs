@@ -1,4 +1,5 @@
-﻿using System;
+﻿#if !XB1
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -6,6 +7,7 @@ using System.Text;
 using Sandbox.Engine.Networking;
 using Sandbox.Game.World;
 using Sandbox.Common;
+using VRage.Game.Components;
 
 namespace Sandbox.Game.Gui.DebugInputComponents
 {
@@ -36,3 +38,4 @@ namespace Sandbox.Game.Gui.DebugInputComponents
         }
     }
 }
+#endif // !XB1

@@ -1,4 +1,5 @@
-﻿using ParallelTasks;
+﻿#if !XB1
+using ParallelTasks;
 using Sandbox.Game.Gui;
 using Sandbox.Game.Localization;
 using Sandbox.Graphics.GUI;
@@ -31,7 +32,7 @@ namespace Sandbox.Engine.Networking
         {
             string[] tags = { WORKSHOP_MOD_TAG };
 
-            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MySpaceTexts.ProgressTextUploadingWorld,
+            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MyCommonTexts.ProgressTextUploadingWorld,
                 null,
                 () => new PublishUGCResult(localModFolder, publishedFileId, visibility, tags, callbackOnFinished),
                 endActionPublishUGC));
@@ -221,7 +222,7 @@ namespace Sandbox.Engine.Networking
             if (!publishedFileId.HasValue)
                 return;
 
-            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MySpaceTexts.ProgressTextDownloadingMods,
+            MyGuiSandbox.AddScreen(new MyGuiScreenProgressAsync(MyCommonTexts.ProgressTextDownloadingMods,
                 null,
                 () => new DownloadUGCResult(publishedFileId.Value, callbackOnFinished),
                 endActionDownloadUGC));
@@ -329,3 +330,4 @@ namespace Sandbox.Engine.Networking
 
     }
 }
+#endif // !XB1

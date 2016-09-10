@@ -2,7 +2,6 @@
 
 using Havok;
 using Sandbox.Common;
-using Sandbox.Common.ModAPI;
 using Sandbox.Common.ObjectBuilders;
 using Sandbox.Common.ObjectBuilders.Definitions;
 using Sandbox.Definitions;
@@ -25,7 +24,6 @@ using Sandbox.Game.SessionComponents;
 using Sandbox.Game.Weapons;
 using Sandbox.Game.World;
 using Sandbox.Graphics.GUI;
-using Sandbox.Graphics.TransparentGeometry.Particles;
 using Sandbox.ModAPI;
 using Sandbox.ModAPI.Interfaces;
 using System;
@@ -35,7 +33,7 @@ using System.Linq;
 using System.Text;
 using VRage;
 using VRage.Audio;
-using VRage.Components;
+using VRage.Game.Components;
 using VRage.FileSystem;
 using VRage.Game.Entity.UseObject;
 using VRage.Game.ObjectBuilders;
@@ -46,7 +44,7 @@ using VRage.ObjectBuilders;
 using VRage.Utils;
 using VRageMath;
 using VRageRender;
-using IMyModdingControllableEntity = Sandbox.ModAPI.Interfaces.IMyControllableEntity;
+using IMyModdingControllableEntity = VRage.Game.ModAPI.Interfaces.IMyControllableEntity;
 
 #endregion
 

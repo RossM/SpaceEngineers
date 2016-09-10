@@ -1,4 +1,4 @@
-﻿
+﻿#if !XB1 // XB1_NOWORKSHOP
 using Sandbox.Engine.Networking;
 using Sandbox.Game.Localization;
 using Sandbox.Graphics.GUI;
@@ -60,7 +60,7 @@ namespace Sandbox.Game.Gui
 
             
 
-            AddCaption(MySpaceTexts.ScreenCaptionWorkshopTags);
+            AddCaption(MyCommonTexts.ScreenCaptionWorkshopTags);
 
             Vector2 origin = new Vector2(0f, -0.025f * (m_activeTags.Count + 2));
             Vector2 offset = new Vector2(0f,  0.05f);
@@ -83,8 +83,8 @@ namespace Sandbox.Game.Gui
 
             origin += offset;
 
-            Controls.Add(m_okButton = MakeButton(origin += offset, MySpaceTexts.Ok, MySpaceTexts.Ok, OnOkClick, MyGuiDrawAlignEnum.HORISONTAL_RIGHT_AND_VERTICAL_CENTER));
-            Controls.Add(m_cancelButton = MakeButton(origin, MySpaceTexts.Cancel, MySpaceTexts.Cancel, OnCancelClick, MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER));
+            Controls.Add(m_okButton = MakeButton(origin += offset, MyCommonTexts.Ok, MyCommonTexts.Ok, OnOkClick, MyGuiDrawAlignEnum.HORISONTAL_RIGHT_AND_VERTICAL_CENTER));
+            Controls.Add(m_cancelButton = MakeButton(origin, MyCommonTexts.Cancel, MyCommonTexts.Cancel, OnCancelClick, MyGuiDrawAlignEnum.HORISONTAL_LEFT_AND_VERTICAL_CENTER));
 
             CloseButtonEnabled = true;
         }
@@ -105,11 +105,13 @@ namespace Sandbox.Game.Gui
             return checkbox;
         }
 
-        private MyGuiControlImageButton AddIcon(Vector2 position, string texture, Vector2 size)
+        private MyGuiControlImage AddIcon(Vector2 position, string texture, Vector2 size)
         {
-            var image = new MyGuiControlImageButton();
-            image.Position = position;
-            image.Size = size;
+            var image = new MyGuiControlImage()
+            {
+                Position = position,
+                Size = size,
+            };
             image.SetTexture(texture);
             Controls.Add(image);
             return image;
@@ -221,3 +223,4 @@ namespace Sandbox.Game.Gui
         }
     }
 }
+#endif // !XB1

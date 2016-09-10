@@ -1,12 +1,13 @@
-﻿using Sandbox.Common;
-using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading;
+#if !XB1
 using System.Windows.Forms;
+#endif
+using VRage.Game;
 using VRage.Input;
 using VRage.Utils;
 using VRageMath;
@@ -28,7 +29,8 @@ namespace Sandbox.Graphics.GUI
     public enum MyGuiControlTextboxStyleEnum
     {
         Default,
-        Debug
+        Debug,
+        Custom
     }
 
     [MyGuiControlType(typeof(MyObjectBuilder_GuiControlTextbox))]
@@ -94,6 +96,17 @@ namespace Sandbox.Graphics.GUI
         #endregion
 
         #region Properties
+        public int MaxLength
+        {
+            get { return m_maxLength; }
+            set
+            {
+                m_maxLength = value;
+                if (m_text.Length > m_maxLength)
+                    m_text.Remove(m_maxLength, m_text.Length - m_maxLength);
+            }
+        }
+
         public float TextScale
         {
             get { return m_textScale; }
@@ -113,7 +126,7 @@ namespace Sandbox.Graphics.GUI
         /// <summary>
         /// When setting text to textbox, make sure you won't set it to unsuported charact
         /// </summary>
-        [Obsolete("Do not use this, it allocates!")]
+        [Obsolete("Do not use this, it allocates! Use SetText instead!")]
         public string Text
         {
             get { return m_text.ToString(); }
@@ -166,6 +179,8 @@ namespace Sandbox.Graphics.GUI
         }
         private MyGuiControlTextboxStyleEnum m_visualStyle;
         private StyleDefinition m_styleDef;
+        private StyleDefinition m_customStyle;
+        private bool m_useCustomStyle;
         private static MyKeyThrottler m_keyThrottler;
 
         protected int CarriagePositionIndex
@@ -180,7 +195,14 @@ namespace Sandbox.Graphics.GUI
 
         private void RefreshVisualStyle()
         {
-            m_styleDef = GetVisualStyle(VisualStyle);
+            if (m_useCustomStyle)
+            {
+                m_styleDef = m_customStyle;
+            }
+            else
+            {
+                m_styleDef = GetVisualStyle(VisualStyle);
+            }
             RefreshInternals();
         }
 
@@ -503,7 +525,7 @@ namespace Sandbox.Graphics.GUI
                         if (Type == MyGuiControlTextboxType.DigitsOnly && m_formattedAlready == false && m_text.Length != 0)
                         {
                             var number = MyValueFormatter.GetDecimalFromString(Text, 1);
-                            int decimalDigits = (number - (int)number > 0) ? 1 : 0;
+                            int decimalDigits = (number - Decimal.Truncate(number) > 0) ? 1 : 0;
                             m_text.Clear().Append(MyValueFormatter.GetFormatedFloat((float)number, decimalDigits, ""));
                             CarriagePositionIndex = m_text.Length;
                             m_formattedAlready = true;
@@ -518,31 +540,30 @@ namespace Sandbox.Graphics.GUI
             m_hadFocusLastTime = HasFocus;
             return ret;
         }
-
+        public bool IsSkipCharacter(MyKeys character)
+        {
+            if (SkipCombinations != null)
+                foreach (var skipCombination in SkipCombinations)
+                {
+                    if (skipCombination.Alt == MyInput.Static.IsAnyAltKeyPressed() &&
+                        skipCombination.Ctrl == MyInput.Static.IsAnyCtrlKeyPressed() &&
+                        skipCombination.Shift == MyInput.Static.IsAnyShiftKeyPressed() &&
+                        (skipCombination.Keys == null ||
+                        skipCombination.Keys.Contains((MyKeys)character)))
+                    {
+                        return true;
+                    }
+                }
+            return false;
+        }
         private void HandleTextInputBuffered(ref MyGuiControlBase ret)
         {
             const char BACKSPACE = '\b';
             bool textChanged = false;
             foreach (var character in MyInput.Static.TextInput)
             {
-                bool skipCharacter = false;
-                if (SkipCombinations != null)
-                    foreach (var skipCombination in SkipCombinations)
-                    {
-                        if (skipCombination.Alt == MyInput.Static.IsAnyAltKeyPressed() &&
-                            skipCombination.Ctrl == MyInput.Static.IsAnyCtrlKeyPressed() &&
-                            skipCombination.Shift == MyInput.Static.IsAnyShiftKeyPressed() &&
-                            (skipCombination.Keys == null ||
-                            skipCombination.Keys.Contains((MyKeys)character)))
-                        {
-                            skipCharacter = true;
-                            break; //forbiden character combination is being pressed
-                        }
-                    }
-
-                if (skipCharacter)
+                if (IsSkipCharacter((MyKeys)character))
                     continue;
-
                 if (Char.IsControl(character))
                 {
                     if (character == BACKSPACE)
@@ -620,6 +641,26 @@ namespace Sandbox.Graphics.GUI
             base.OnSizeChanged();
             RefreshTextArea();
             RefreshSlidingWindow();
+        }
+
+        internal override void OnFocusChanged(bool focus)
+        {
+            if (focus)
+            {
+                if (MyInput.Static.IsNewKeyPressed(MyKeys.Tab))     // If we got here by Tab key
+                {
+                    // Highlight the text in the text box when tabbed to
+                    MoveCarriageToEnd();
+                    m_selection.SelectAll(this);
+                }
+            }
+            else
+            {
+                // Clear the selection when leaving
+                m_selection.Reset(this);
+            }
+
+            base.OnFocusChanged(focus);
         }
 
         public void MoveCarriageToEnd()
@@ -791,29 +832,41 @@ namespace Sandbox.Graphics.GUI
 
             public void CopyText(MyGuiControlTextbox sender)
             {
+#if !XB1
                 ClipboardText = sender.Text.Substring(Start, Length);
 
-                Thread myth;
-                myth = new Thread(new System.Threading.ThreadStart(CopyToClipboard));
-                myth.ApartmentState = ApartmentState.STA;
-                myth.Start();
+                if (!string.IsNullOrEmpty(ClipboardText))
+                {
+                    Thread thread = new Thread(() => System.Windows.Forms.Clipboard.SetText(ClipboardText));
+                    thread.SetApartmentState(ApartmentState.STA);
+                    thread.Start();
+                    thread.Join();
+                }
+#else // XB1
+                System.Diagnostics.Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif // XB1
             }
 
             void CopyToClipboard()
             {
+#if !XB1
                 if(ClipboardText != "")
                     Clipboard.SetText(ClipboardText);
+#else
+                Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif
             }
 
             public void PasteText(MyGuiControlTextbox sender)
             {
+#if !XB1
                 //First we erase the selection
                 EraseText(sender);
+                
                 var prefix = sender.Text.Substring(0, sender.CarriagePositionIndex);
                 var suffix = sender.Text.Substring(sender.CarriagePositionIndex);
-                Thread myth;
                 
-                myth = new Thread(new System.Threading.ThreadStart(PasteFromClipboard));
+                Thread myth = new Thread(new System.Threading.ThreadStart(PasteFromClipboard));
                 myth.ApartmentState = ApartmentState.STA;
                 myth.Start();
                 
@@ -823,11 +876,18 @@ namespace Sandbox.Graphics.GUI
                 sender.Text = new StringBuilder(prefix).Append(ClipboardText).Append(suffix).ToString();
                 sender.CarriagePositionIndex = prefix.Length + ClipboardText.Length;
                 Reset(sender);
+#else
+                Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif
             }
 
             void PasteFromClipboard()
             {
+#if !XB1
                 ClipboardText = Clipboard.GetText();
+#else
+                Debug.Assert(false, "Not Clipboard support on XB1!");
+#endif
             }
         }
 
@@ -835,6 +895,13 @@ namespace Sandbox.Graphics.GUI
         {
             get;
             private set;
+        }
+
+        public void ApplyStyle(StyleDefinition style)
+        {
+            m_useCustomStyle = true;
+            m_customStyle = style;
+            RefreshVisualStyle();
         }
     }
 }

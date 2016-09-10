@@ -7,7 +7,6 @@ using VRageRender;
 using Sandbox.ModAPI;
 using Sandbox.Common;
 using Sandbox.Common.ObjectBuilders;
-using Sandbox.Common.ObjectBuilders.Voxels;
 using Sandbox.Definitions;
 using Sandbox.Engine.Physics;
 using Sandbox.Engine.Utils;
@@ -17,7 +16,7 @@ using Sandbox.Game.World;
 using System.Diagnostics;
 using System.Threading;
 
-using Sandbox.Common.Components;
+
 using Sandbox.Graphics;
 using VRage.ModAPI;
 
@@ -32,7 +31,7 @@ namespace Sandbox.Game.Components
             m_ladder = ladder;
         }
 
-        public override bool DebugDraw()
+        public override void DebugDraw()
         {
             //return true;
 
@@ -54,7 +53,7 @@ namespace Sandbox.Game.Components
 
             //m = m * WorldMatrix;
 
-            return base.DebugDraw();
+            base.DebugDraw();
         }
     }
 }

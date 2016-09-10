@@ -10,8 +10,17 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using Sandbox.Common.ObjectBuilders.Definitions;
+using VRage.Game;
 using VRage.Plugins;
 using VRage.ObjectBuilders;
+using VRage.Game.Common;
+using VRage.Game.Definitions;
+using VRage.Game.Definitions.Animation;
+using VRage.Game.ObjectBuilders;
+using VRage.Game.ModAPI.Ingame;
+#if XB1 // XB1_ALLINONEASSEMBLY
+using VRage.Utils;
+#endif // XB1
 
 namespace Sandbox.Game.Screens.Helpers
 {
@@ -29,10 +38,14 @@ namespace Sandbox.Game.Screens.Helpers
         static MyToolbarItemFactory()
         {
             m_objectFactory = new MyObjectFactory<MyToolbarItemDescriptor, MyToolbarItem>();
+#if XB1 // XB1_ALLINONEASSEMBLY
+            m_objectFactory.RegisterFromAssembly(MyAssembly.AllInOneAssembly);
+#else // !XB1
             m_objectFactory.RegisterFromAssembly(Assembly.GetAssembly(typeof(MyToolbarItem)));
             m_objectFactory.RegisterFromAssembly(MyPlugins.GameAssembly);
             m_objectFactory.RegisterFromAssembly(MyPlugins.SandboxAssembly); //TODO: Will be removed 
             m_objectFactory.RegisterFromAssembly(MyPlugins.UserAssembly);
+#endif // !XB1
         }
 
         public static MyToolbarItem CreateToolbarItem(MyObjectBuilder_ToolbarItem data)
@@ -47,17 +60,52 @@ namespace Sandbox.Game.Screens.Helpers
         }
 
         #region "auxiliary functions to create toolbar items"
+        public static MyToolbarItem CreateToolbarItemFromInventoryItem(IMyInventoryItem inventoryItem)
+        {
+            var itemDefinitionId = inventoryItem.GetDefinitionId();
+            MyDefinitionBase itemDefinition;
+            if (MyDefinitionManager.Static.TryGetDefinition(itemDefinitionId, out itemDefinition))
+            {
+                if ((itemDefinition is MyPhysicalItemDefinition) || (itemDefinition is MyCubeBlockDefinition))
+                {
+                    var itemBuilder = MyToolbarItemFactory.ObjectBuilderFromDefinition(itemDefinition);
+                    if (itemBuilder is MyObjectBuilder_ToolbarItemMedievalWeapon)
+                    {
+                        var meWeaponBuilder = itemBuilder as MyObjectBuilder_ToolbarItemMedievalWeapon;
+                        meWeaponBuilder.ItemId = inventoryItem.ItemId;
+                    }
+
+                    if (itemBuilder != null && !(itemBuilder is MyObjectBuilder_ToolbarItemEmpty))
+                    {
+                        return MyToolbarItemFactory.CreateToolbarItem(itemBuilder);
+                    }
+                }
+            }
+
+            return null;
+        }
+
         public static MyObjectBuilder_ToolbarItem ObjectBuilderFromDefinition(MyDefinitionBase defBase)
         {
-            if (defBase is MyConsumableItemDefinition)
+            if (defBase is MyUsableItemDefinition)
             {
-                MyObjectBuilder_ToolbarItemConsumable consumableData = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemConsumable>();
-                consumableData.DefinitionId = defBase.Id;
-                return consumableData;
+                MyObjectBuilder_ToolbarItemUsable usableData = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemUsable>();
+                usableData.DefinitionId = defBase.Id;
+                return usableData;
             }
             else if ((defBase is MyPhysicalItemDefinition) && (defBase.Id.TypeId == typeof(MyObjectBuilder_PhysicalGunObject)))
             {
-                MyObjectBuilder_ToolbarItemWeapon weaponData = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemWeapon>();
+                MyObjectBuilder_ToolbarItemWeapon weaponData = null;
+                // CH: TODO: This is especially ugly, I know. But it's a quick fix. To do it properly, we will need to
+                // remove this whole method and construct the inventory items solely based upon factory tags on toolbar item types
+                if (MyPerGameSettings.Game == GameEnum.ME_GAME)
+                {
+                    weaponData = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemMedievalWeapon>();
+                }
+                else
+                {
+                    weaponData = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemWeapon>();
+                }
                 weaponData.DefinitionId = defBase.Id;
                 return weaponData;
             }
@@ -104,18 +152,25 @@ namespace Sandbox.Game.Screens.Helpers
                 ob.DefinitionId = defBase.Id;
                 return ob;
             }
-			else if (defBase is MyAreaMarkerDefinition)
-			{
-				var acData = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemAreaMarker>();
-				acData.DefinitionId = defBase.Id;
-				return acData;
-			}
+            else if (defBase is MyAreaMarkerDefinition)
+            {
+                var acData = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemAreaMarker>();
+                acData.DefinitionId = defBase.Id;
+                return acData;
+            }
+            else if (defBase is MyGridCreateToolDefinition)
+            {
+                var gctool = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemCreateGrid>();
+                gctool.DefinitionId = defBase.Id;
+                return gctool;
+
+            }
             return new MyObjectBuilder_ToolbarItemEmpty();
         }
 
-        public static string GetIconForTerminalGroup(MyBlockGroup group)
+        public static string[] GetIconForTerminalGroup(MyBlockGroup group)
         {
-            string output = "Textures\\GUI\\Icons\\GroupIcon.dds";
+            string[] output = new string[] { "Textures\\GUI\\Icons\\GroupIcon.dds" };
             bool genericType = false;
             var blocks = group.Blocks;
             if (blocks == null || blocks.Count == 0)
@@ -131,7 +186,7 @@ namespace Sandbox.Game.Screens.Helpers
                 }
             }
             if (!genericType)
-                output = def.Icon;
+                output = def.Icons;
 
             return output;
         }
@@ -140,7 +195,7 @@ namespace Sandbox.Game.Screens.Helpers
         {
             MyObjectBuilder_ToolbarItemTerminalBlock output = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemTerminalBlock>();
             output.BlockEntityId = block.EntityId;
-            output.Action = null;
+            output._Action = null;
 
             return output;
         }
@@ -149,7 +204,13 @@ namespace Sandbox.Game.Screens.Helpers
         {
             MyObjectBuilder_ToolbarItemTerminalGroup output = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemTerminalGroup>();
             output.GroupName = group.Name.ToString();
-            output.Action = null;
+            output._Action = null;
+            return output;
+        }
+
+        public static MyObjectBuilder_ToolbarItemWeapon WeaponObjectBuilder()
+        {
+            MyObjectBuilder_ToolbarItemWeapon output = MyObjectBuilderSerializer.CreateNewObject<MyObjectBuilder_ToolbarItemWeapon>();
             return output;
         }
 

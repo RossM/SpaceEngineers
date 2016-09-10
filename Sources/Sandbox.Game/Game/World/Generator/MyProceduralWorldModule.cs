@@ -8,6 +8,9 @@ using VRage.Library.Utils;
 using VRage.Noise;
 using VRage.Noise.Combiners;
 using VRageMath;
+using Sandbox.Common.ObjectBuilders;
+using VRage.Game;
+using VRage.Game.Entity;
 
 namespace Sandbox.Game.World.Generator
 {
@@ -140,12 +143,12 @@ namespace Sandbox.Game.World.Generator
         {
             int hash = objectSeed.CellId.GetHashCode();
             hash = (hash * 397) ^ m_seed;
-            hash = (hash * 397) ^ objectSeed.Index;
-            hash = (hash * 397) ^ objectSeed.Seed;
+            hash = (hash * 397) ^ objectSeed.Params.Index;
+            hash = (hash * 397) ^ objectSeed.Params.Seed;
             return hash;
         }
 
-        public abstract void GenerateObjects(List<MyObjectSeed> list);
+        public abstract void GenerateObjects(List<MyObjectSeed> list, HashSet<MyObjectSeedParams> existingObjectsSeeds);
 
         protected void GenerateObjectSeeds(ref BoundingSphereD sphere)
         {
@@ -299,7 +302,7 @@ namespace Sandbox.Game.World.Generator
 
                 foreach (var objectSeed in m_tempObjectSeedList)
                 {
-                    if (objectSeed.Generated)
+                    if (objectSeed.Params.Generated)
                     {
                         CloseObjectSeed(objectSeed);
                     }
@@ -319,17 +322,17 @@ namespace Sandbox.Game.World.Generator
 
         protected abstract void CloseObjectSeed(MyObjectSeed objectSeed);
 
-        protected Vector3I.RangeIterator GetCellsIterator(BoundingSphereD sphere)
+        protected Vector3I_RangeIterator GetCellsIterator(BoundingSphereD sphere)
         {
             return GetCellsIterator(BoundingBoxD.CreateFromSphere(sphere));
         }
 
-        protected Vector3I.RangeIterator GetCellsIterator(BoundingBoxD bbox)
+        protected Vector3I_RangeIterator GetCellsIterator(BoundingBoxD bbox)
         {
             Vector3I min = Vector3I.Floor(bbox.Min / CELL_SIZE);
             Vector3I max = Vector3I.Floor(bbox.Max / CELL_SIZE);
 
-            return new Vector3I.RangeIterator(ref min, ref max);
+            return new Vector3I_RangeIterator(ref min, ref max);
         }
 
         protected void OverlapAllBoundingSphere(ref BoundingSphereD sphere, List<MyObjectSeed> list)

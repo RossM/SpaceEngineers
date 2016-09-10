@@ -1,9 +1,9 @@
-﻿using Sandbox.Common.ObjectBuilders.Gui;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using VRage;
+using VRage.Game;
 using VRage.Input;
 using VRage.Library.Utils;
 using VRage.Utils;
@@ -162,6 +162,14 @@ namespace Sandbox.Graphics.GUI
             Top = Bottom = vertical;
         }
 
+        public MyGuiBorderThickness(float left, float right, float top, float bottom)
+        {
+            Left = left;
+            Right = right;
+            Top = top;
+            Bottom = bottom;
+        }
+
         public float HorizontalSum
         {
             get { return Left + Right; }
@@ -185,6 +193,11 @@ namespace Sandbox.Graphics.GUI
         public Vector2 BottomLeftOffset
         {
             get { return new Vector2(Left, -Bottom); }
+        }
+
+        public Vector2 BottomRightOffset
+        {
+            get { return new Vector2(-Right, -Bottom);}
         }
 
         public Vector2 SizeChange
@@ -215,6 +228,13 @@ namespace Sandbox.Graphics.GUI
         public struct NameChangedArgs
         {
             public string OldName;
+        }
+
+        private float m_alpha = 1;
+        public float Alpha
+        {
+            get { return m_alpha; }
+            set { m_alpha = value; }
         }
 
         private const bool DEBUG_CONTROL_FOCUS = false;
@@ -496,6 +516,11 @@ namespace Sandbox.Graphics.GUI
         }
 
         /// <summary>
+        /// Called when the control enters or leaves focus.
+        /// </summary>
+        public event Action<MyGuiControlBase, bool> FocusChanged;
+
+        /// <summary>
         /// Specific user data for this control.
         /// </summary>
         public object UserData
@@ -508,14 +533,6 @@ namespace Sandbox.Graphics.GUI
         {
             get { return Path.Combine(Owner != null ? Owner.DebugNamePath : "null", Name); }
         }
-
-        /// <summary>
-        /// Only use this to turn off mouse handling for child controls when
-        /// parent does not contain mouse.
-        /// </summary>
-        internal bool HandleMouse = true;
-
-        bool IMyGuiControlsOwner.HandleMouse { get { return HandleMouse && (Owner != null ? Owner.HandleMouse : true); } }
 
         #endregion Properties and public fields
 
@@ -734,10 +751,20 @@ namespace Sandbox.Graphics.GUI
 
         /// <summary>
         /// Checks if mouse cursor is over control.
+        /// GR: Update: Also check if mouse over parent controls. Slower but more solid implementation (and we get rid of a few bugs). Also there is no need for HandleMouse variable (removed)
         /// </summary>
         public virtual bool CheckMouseOver()
         {
-            return CheckMouseOver(Size, GetPositionAbsolute(), OriginAlign);
+            var currentOwner = Owner as MyGuiControlBase;
+            var IsMouseOverAll = true;
+            while (currentOwner != null && IsMouseOverAll)
+            {
+                IsMouseOverAll &= currentOwner.IsMouseOver;
+                currentOwner = currentOwner.Owner as MyGuiControlBase;
+            }
+            return IsMouseOverAll && CheckMouseOver(Size, GetPositionAbsolute(), OriginAlign);
+            //Or with recursion
+            //return ( (Owner as MyGuiControlBase) == null ? true : (Owner as MyGuiControlBase).CheckMouseOver() ) && CheckMouseOver(Size, GetPositionAbsolute(), OriginAlign);
         }
 
         protected virtual void OnHasHighlightChanged()
@@ -778,6 +805,11 @@ namespace Sandbox.Graphics.GUI
                 element.ColorMask = ColorMask;
         }
 
+        internal virtual void OnFocusChanged(bool focus)
+        {
+            if (FocusChanged != null)
+                FocusChanged(this, focus);
+        }
         #endregion
 
         /// <summary>
@@ -941,7 +973,7 @@ namespace Sandbox.Graphics.GUI
                 if (element.GetExclusiveInputHandler() == element)
                     continue;
 
-                element.Draw(transitionAlpha, backgroundTransitionAlpha);
+                element.Draw(transitionAlpha * element.Alpha, backgroundTransitionAlpha * element.Alpha);
             }
         }
 

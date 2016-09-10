@@ -15,6 +15,8 @@ using Sandbox.Graphics;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using VRage.Game;
+using VRage.Game.Entity;
 using VRage.Import;
 using VRage.Input;
 using VRage.Library.Utils;
@@ -34,7 +36,7 @@ namespace Sandbox.Game.Gui
         {
             base.Init(objectBuilder);
 
-            Render.ModelStorage = MyModels.GetModelOnlyData(@"Models\StoneRoundLargeFull.mwm");
+            Render.ModelStorage = VRage.Game.Models.MyModels.GetModelOnlyData(@"Models\StoneRoundLargeFull.mwm");
         }     
     }
 
@@ -262,7 +264,7 @@ namespace Sandbox.Game.Gui
                         if (entity.Physics != null)
                         {
                             Vector3D posDelta = entity.Physics.LinearVelocity * SI_DYNAMICS_MULTIPLIER;
-                            MyPhysics.Clusters.EnsureClusterSpace(entity.PositionComp.WorldAABB + posDelta);
+                            MyPhysics.EnsurePhysicsSpace(entity.PositionComp.WorldAABB + posDelta);
 
                             if (entity.Physics.LinearVelocity.Length() > 0.1f)
                             {
@@ -284,7 +286,7 @@ namespace Sandbox.Game.Gui
                    sphere.PositionComp.SetPosition(MySector.MainCamera.Position + 2 * MySector.MainCamera.ForwardVector);
                    sphere.Physics.Enabled = false;
 
-                   MySession.LocalHumanPlayer.Controller.TakeControl(sphere);
+                   MySession.Static.LocalHumanPlayer.Controller.TakeControl(sphere);
                    return true;
                });
 
@@ -301,7 +303,7 @@ namespace Sandbox.Game.Gui
             () => "Insert 2 trees",
             delegate
             {
-                //MySession.LocalCharacter.AddCommand(new MyAnimationCommand()
+                //MySession.Static.LocalCharacter.AddCommand(new MyAnimationCommand()
                 //{
                 //    AnimationSubtypeName = "Wave",
                 //    BlendTime = 0.3f,
@@ -353,7 +355,6 @@ namespace Sandbox.Game.Gui
                  MyDebugDrawSettings.ENABLE_DEBUG_DRAW = !MyDebugDrawSettings.ENABLE_DEBUG_DRAW;
                  if (MyDebugDrawSettings.ENABLE_DEBUG_DRAW)
                  {
-                     MyStructuralIntegrity.Enabled = true;
                      MyDebugDrawSettings.DEBUG_DRAW_STRUCTURAL_INTEGRITY = true;
                      DEBUG_DRAW_PATHS = true;
                      DEBUG_DRAW_TENSIONS = false;
@@ -377,17 +378,6 @@ namespace Sandbox.Game.Gui
                  return true;
              });
 
-              AddShortcut(MyKeys.NumPad1, true, false, false, false,
-             () => "Reorder clusters",
-             delegate
-             {
-                 if (MySession.ControlledEntity != null)
-                 {
-                     MySession.ControlledEntity.Entity.GetTopMostParent().Physics.ReorderClusters();
-                 }
-                 return true;
-             });
-
               AddShortcut(MyKeys.NumPad3, true, false, false, false,
              () => "SI Debug draw tensions",
              delegate
@@ -395,7 +385,6 @@ namespace Sandbox.Game.Gui
                  MyDebugDrawSettings.ENABLE_DEBUG_DRAW = !MyDebugDrawSettings.ENABLE_DEBUG_DRAW;
                  if (MyDebugDrawSettings.ENABLE_DEBUG_DRAW)
                  {
-                     MyStructuralIntegrity.Enabled = true;
                      MyDebugDrawSettings.DEBUG_DRAW_STRUCTURAL_INTEGRITY = true;
                      DEBUG_DRAW_PATHS = false;
                      DEBUG_DRAW_TENSIONS = true;
@@ -552,22 +541,22 @@ namespace Sandbox.Game.Gui
 
                 MatrixD worldMatrix = m_voxelMap.PositionComp.WorldMatrix;
 
-                //var rotationMatrix = Matrix.CreateRotationZ(0.01f);
-                //worldMatrix *= rotationMatrix;
-                //centerDelta = Vector3.TransformNormal(centerDelta, rotationMatrix);
+                var rotationMatrix = Matrix.CreateRotationZ(0.01f);
+                worldMatrix *= rotationMatrix;
+                centerDelta = Vector3.TransformNormal(centerDelta, rotationMatrix);
 
-                //worldMatrix.Translation = center + centerDelta;
+                worldMatrix.Translation = center + centerDelta;
 
-               // m_voxelMap.PositionComp.WorldMatrix = worldMatrix;
+                //m_voxelMap.PositionComp.WorldMatrix = worldMatrix;
 
 
                 SI_DYNAMICS_MULTIPLIER += 0.01f;
 
-                var tr = worldMatrix.Translation;
-                worldMatrix.Translation = new Vector3D(tr.X += (double)MyMath.FastSin(SI_DYNAMICS_MULTIPLIER), tr.Y, tr.Z);
+                //var tr = worldMatrix.Translation;
+                //worldMatrix.Translation = new Vector3D(tr.X += (double)MyMath.FastSin(SI_DYNAMICS_MULTIPLIER), tr.Y, tr.Z);
                 //worldMatrix.Translation = new Vector3D(tr.X + 100, tr.Y, tr.Z);
 
-//                m_voxelMap.PositionComp.WorldMatrix = worldMatrix;
+                //m_voxelMap.PositionComp.WorldMatrix = worldMatrix;
 
                 var localBB = m_voxelMap.PositionComp.LocalAABB;
                 MyOrientedBoundingBoxD orb = new MyOrientedBoundingBoxD((BoundingBoxD)localBB, m_voxelMap.PositionComp.WorldMatrix);
@@ -646,6 +635,7 @@ namespace Sandbox.Game.Gui
                 }
             }
 
+            return;
 
             VRageRender.MyRenderProxy.DebugDrawAxis(m_teapotMatrix, 100f, false);
 
@@ -852,7 +842,7 @@ namespace Sandbox.Game.Gui
                 Vector3D closestPoint = Vector3.Zero;
                 Vector3D campos = MySector.MainCamera.Position;
                 closestPoint = MyUtils.GetClosestPointOnLine(ref lineStart, ref lineEnd, ref campos);
-                var distance = MySector.MainCamera.GetDistanceWithFOV(closestPoint);
+                var distance = MySector.MainCamera.GetDistanceFromPoint(closestPoint);
 
                 var lineThickness = thickness * MathHelper.Clamp(distance, 0.1f, 10);
 
@@ -866,17 +856,17 @@ namespace Sandbox.Game.Gui
             MyDefinitionId id = new MyDefinitionId(MyObjectBuilderType.Parse("MyObjectBuilder_Tree"), "Tree04_v2");
             var itemDefinition = MyDefinitionManager.Static.GetEnvironmentItemDefinition(id);
 
-            if (MyModels.GetModelOnlyData(itemDefinition.Model).HavokBreakableShapes != null)
+            if (VRage.Game.Models.MyModels.GetModelOnlyData(itemDefinition.Model).HavokBreakableShapes != null)
             {
-                var breakableShape = MyModels.GetModelOnlyData(itemDefinition.Model).HavokBreakableShapes[0].Clone();
-                MatrixD worldMatrix = MatrixD.CreateWorld(MySession.ControlledEntity.Entity.PositionComp.GetPosition() +2 * MySession.ControlledEntity.Entity.WorldMatrix.Forward, Vector3.Forward, Vector3.Up);
+                var breakableShape = VRage.Game.Models.MyModels.GetModelOnlyData(itemDefinition.Model).HavokBreakableShapes[0].Clone();
+                MatrixD worldMatrix = MatrixD.CreateWorld(MySession.Static.ControlledEntity.Entity.PositionComp.GetPosition() +2 * MySession.Static.ControlledEntity.Entity.WorldMatrix.Forward, Vector3.Forward, Vector3.Up);
 
 
 
                 List<HkdShapeInstanceInfo> children = new List<HkdShapeInstanceInfo>();
                 breakableShape.GetChildren(children);
                 children[0].Shape.SetFlagRecursively(HkdBreakableShape.Flags.IS_FIXED);
-                var piece = Sandbox.Engine.Physics.MyDestructionHelper.CreateFracturePiece(breakableShape, MyPhysics.SingleWorld.DestructionWorld, ref worldMatrix, false, itemDefinition.Id, true);
+                var piece = MyDestructionHelper.CreateFracturePiece(breakableShape, ref worldMatrix, false, itemDefinition.Id, true);
             }
 
         }
@@ -885,7 +875,7 @@ namespace Sandbox.Game.Gui
 
         void InsertVoxelMap()
         {
-            MatrixD worldMatrix = MatrixD.CreateWorld(MySession.ControlledEntity.Entity.PositionComp.GetPosition() + 25 * MySession.ControlledEntity.Entity.WorldMatrix.Forward, MySession.ControlledEntity.Entity.WorldMatrix.Forward, MySession.ControlledEntity.Entity.WorldMatrix.Up);
+            MatrixD worldMatrix = MatrixD.CreateWorld(MySector.MainCamera.Position + 25 * MySector.MainCamera.ForwardVector, MySector.MainCamera.ForwardVector, MySector.MainCamera.UpVector);
             //m_voxelMap = MyWorldGenerator.AddAsteroidPrefab("DeformedSphere2_64x64x64", worldMatrix.Translation, "Test");
 
 
@@ -904,7 +894,14 @@ namespace Sandbox.Game.Gui
            // for (int i = 0; i < vms.Length; i++)
             {
              //   wm.Translation = worldMatrix.Translation;
-                m_voxelMap = Sandbox.Game.World.MyWorldGenerator.AddAsteroidPrefab(vms[0], worldMatrix, "Test");
+
+                var name = vms[0];
+                var fileName = MyWorldGenerator.GetVoxelPrefabPath(name);
+                var storage = Sandbox.Engine.Voxels.MyStorageBase.Load(fileName);
+                m_voxelMap = MyWorldGenerator.AddVoxelMap(name, storage, worldMatrix);
+
+
+                //m_voxelMap = Sandbox.Game.World.MyWorldGenerator.AddAsteroidPrefab(vms[0], worldMatrix, "Test");
                 m_voxelMap.IsStaticForCluster = false;
              //   m_voxelMap.WorldMatrix = wm;
 
@@ -920,6 +917,7 @@ namespace Sandbox.Game.Gui
             var skin = new MySkinnedEntity();
 
             MyObjectBuilder_Character ob = new MyObjectBuilder_Character();
+            ob.EntityDefinitionId = new SerializableDefinitionId(typeof(MyObjectBuilder_Character), "Medieval_barbarian");
             ob.PositionAndOrientation = new VRage.MyPositionAndOrientation(MySector.MainCamera.Position + 2 * MySector.MainCamera.ForwardVector, MySector.MainCamera.ForwardVector, MySector.MainCamera.UpVector);
             skin.Init(null, @"Models\Characters\Basic\ME_barbar.mwm", null, null);
             skin.Init(ob);

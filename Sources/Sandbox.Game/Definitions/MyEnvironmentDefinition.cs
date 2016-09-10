@@ -3,15 +3,20 @@ using Sandbox.Game.World;
 using System;
 using System.Collections.Generic;
 using VRage;
+using VRage.Game;
+using VRage.Game.Definitions;
+using VRage.Utils;
 using VRageMath;
-using EnvironmentalParticleSettings = Sandbox.Common.ObjectBuilders.Definitions.MyObjectBuilder_EnvironmentDefinition.EnvironmentalParticleSettings;
+using EnvironmentalParticleSettings = VRage.Game.MyObjectBuilder_EnvironmentDefinition.EnvironmentalParticleSettings;
 
 namespace Sandbox.Definitions
 {
-    [MyDefinitionType(typeof(MyObjectBuilder_EnvironmentDefinition))]
+    [MyDefinitionType(typeof(MyObjectBuilder_EnvironmentDefinition), typeof(Postprocessor))]
     public class MyEnvironmentDefinition : MyDefinitionBase
     {
-        public string BackgroundTexture = @"Textures\BackgroundCube\Final\BackgroundCube.dds";
+        public string BackgroundTexture                 = @"Textures\BackgroundCube\Final\BackgroundCube.dds";
+        public string BackgroundTextureNight            = @"Textures\BackgroundCube\Final\BackgroundCube.dds";
+        public string BackgroundTextureNightPrefiltered = @"Textures\BackgroundCube\Final\BackgroundCube.dds";
         public MyOrientation BackgroundOrientation = new MyOrientation(MathHelper.ToRadians(60.3955536f), MathHelper.ToRadians(-61.1861954f), MathHelper.ToRadians(90.90578f));
         public float DistanceToSun = 1620.18518f;
 
@@ -21,8 +26,9 @@ namespace Sandbox.Definitions
             SunIntensity = 1.456f,
             SunDiffuse = new VRageMath.Color(0.784313738f),
             SunSpecular = new VRageMath.Color(0.784313738f),
-            BackSunDiffuse = new VRageMath.Color(0.784313738f),
-            BackSunIntensity = 0.239f,
+            AdditionalSunDirection = new Vector2[] { new Vector2() },
+            AdditionalSunDiffuse = new Color[] { new Color(0.784313738f) },
+            AdditionalSunIntensity = new float[] { /*0.239f*/ 0f },
             AmbientColor = new Color(0.141176477f),
             AmbientMultiplier = 0.969f,
             EnvironmentAmbientIntensity = 0.5f,
@@ -70,6 +76,24 @@ namespace Sandbox.Definitions
             get { return m_smallShipMaxAngularSpeedInRadians; }
         }
 
+        public Color ContourHighlightColor
+        {
+            get;
+            set;
+        }
+
+        public float ContourHighlightThickness
+        {
+            get;
+            set;
+        }
+
+        public float HighlightPulseInSeconds
+        {
+            get;
+            set;
+        }
+
         static MyEnvironmentDefinition m_defaults = new MyEnvironmentDefinition();
         const float DELTA = 0.001f;
 
@@ -79,7 +103,9 @@ namespace Sandbox.Definitions
 
             MyObjectBuilder_EnvironmentDefinition objBuilder = (MyObjectBuilder_EnvironmentDefinition)builder;
 
-            BackgroundTexture = objBuilder.EnvironmentTexture;
+            BackgroundTexture                 = objBuilder.EnvironmentTexture;
+            BackgroundTextureNight            = objBuilder.EnvironmentTextureNight ?? BackgroundTexture;
+            BackgroundTextureNightPrefiltered = objBuilder.EnvironmentTextureNightPrefiltered ?? BackgroundTextureNight;
             BackgroundOrientation = new MyOrientation(
                 MathHelper.ToRadians(objBuilder.EnvironmentOrientation.Yaw),
                 MathHelper.ToRadians(objBuilder.EnvironmentOrientation.Pitch),
@@ -90,6 +116,9 @@ namespace Sandbox.Definitions
 			EnvironmentalParticles = objBuilder.EnvironmentalParticles;
             SmallShipMaxAngularSpeed = objBuilder.SmallShipMaxAngularSpeed;
             LargeShipMaxAngularSpeed = objBuilder.LargeShipMaxAngularSpeed;
+            ContourHighlightColor = new Color(objBuilder.ContourHighlightColor);
+            ContourHighlightThickness = objBuilder.ContourHighlightThickness;
+            HighlightPulseInSeconds = objBuilder.HighlightPulseInSeconds;
             FogProperties.Deserialize(objBuilder);
             SunProperties.Deserialize(objBuilder);
         }
@@ -99,6 +128,8 @@ namespace Sandbox.Definitions
             var result = new MyObjectBuilder_EnvironmentDefinition()
             {
                 EnvironmentTexture = this.BackgroundTexture,
+                EnvironmentTextureNight = this.BackgroundTextureNight,
+                EnvironmentTextureNightPrefiltered = this.BackgroundTextureNightPrefiltered,
                 SmallShipMaxSpeed = this.SmallShipMaxSpeed,
                 LargeShipMaxSpeed = this.LargeShipMaxSpeed,
 				EnvironmentalParticles = this.EnvironmentalParticles,
@@ -108,6 +139,10 @@ namespace Sandbox.Definitions
                     MathHelper.ToDegrees(BackgroundOrientation.Yaw),
                     MathHelper.ToDegrees(BackgroundOrientation.Pitch),
                     MathHelper.ToDegrees(BackgroundOrientation.Roll)),
+                ContourHighlightColor = this.ContourHighlightColor.ToVector4(),
+                ContourHighlightThickness = this.ContourHighlightThickness,
+                HighlightPulseInSeconds = this.HighlightPulseInSeconds,
+
             };
             FogProperties.Serialize(result);
             SunProperties.Serialize(result);
@@ -122,6 +157,16 @@ namespace Sandbox.Definitions
 			{
 				BackgroundTexture = src.BackgroundTexture;
 			}
+
+            if (src.BackgroundTextureNight != m_defaults.BackgroundTextureNight)
+            {
+                BackgroundTextureNight = src.BackgroundTextureNight;
+            }
+
+            if (src.BackgroundTextureNightPrefiltered != m_defaults.BackgroundTextureNightPrefiltered)
+            {
+                BackgroundTextureNightPrefiltered = src.BackgroundTextureNightPrefiltered;
+            }
 
 			if (Math.Abs(src.BackgroundOrientation.Yaw - m_defaults.BackgroundOrientation.Yaw) > DELTA ||
 				Math.Abs(src.BackgroundOrientation.Pitch - m_defaults.BackgroundOrientation.Pitch) > DELTA ||
@@ -166,6 +211,19 @@ namespace Sandbox.Definitions
 			{
 				LargeShipMaxAngularSpeed = src.m_largeShipMaxAngularSpeed;
 			}
+            if (src.ContourHighlightColor != m_defaults.ContourHighlightColor)
+            {
+                ContourHighlightColor = src.ContourHighlightColor;
+            }
+            if (src.ContourHighlightThickness != m_defaults.ContourHighlightThickness)
+            {
+                ContourHighlightThickness = src.ContourHighlightThickness;
+            }
+
+            if(src.HighlightPulseInSeconds != m_defaults.HighlightPulseInSeconds)
+            {
+                HighlightPulseInSeconds = src.HighlightPulseInSeconds;
+            }
 		}
 		private void MergeSunProperties(MyEnvironmentDefinition src)
 		{
@@ -184,15 +242,20 @@ namespace Sandbox.Definitions
 				SunProperties.BackgroundColor = src.SunProperties.BackgroundColor;
 			}
 
-			if (src.SunProperties.BackSunDiffuse != m_defaults.SunProperties.BackSunDiffuse)
+			if (src.SunProperties.AdditionalSunDiffuse != m_defaults.SunProperties.AdditionalSunDiffuse)
 			{
-				SunProperties.BackSunDiffuse = src.SunProperties.BackSunDiffuse;
+				SunProperties.AdditionalSunDiffuse = src.SunProperties.AdditionalSunDiffuse;
 			}
 
-			if (src.SunProperties.BackSunIntensity != m_defaults.SunProperties.BackSunIntensity)
+			if (src.SunProperties.AdditionalSunIntensity != m_defaults.SunProperties.AdditionalSunIntensity)
 			{
-				SunProperties.BackSunIntensity = src.SunProperties.BackSunIntensity;
+				SunProperties.AdditionalSunIntensity = src.SunProperties.AdditionalSunIntensity;
 			}
+
+            if (src.SunProperties.AdditionalSunDirection != m_defaults.SunProperties.AdditionalSunDirection)
+            {
+                SunProperties.AdditionalSunDirection = src.SunProperties.AdditionalSunDirection;
+            }
 
 			if (src.SunProperties.EnvironmentAmbientIntensity != m_defaults.SunProperties.EnvironmentAmbientIntensity)
 			{
@@ -267,5 +330,31 @@ namespace Sandbox.Definitions
             }
 		}
 		#endregion
+
+        class Postprocessor : MyDefinitionPostprocessor
+        {
+            public override void AfterLoaded(ref Bundle definitions)
+            { }
+
+            public override void AfterPostprocess(MyDefinitionSet set, Dictionary<MyStringHash, MyDefinitionBase> definitions)
+            { }
+
+            public override void OverrideBy(ref Bundle currentDefinitions, ref Bundle overrideBySet)
+            {
+                foreach (var def in overrideBySet.Definitions)
+                {
+                    if (def.Value.Enabled)
+                    {
+                        MyDefinitionBase envDef;
+                        if (currentDefinitions.Definitions.TryGetValue(def.Key, out envDef))
+                            ((MyEnvironmentDefinition)envDef).Merge((MyEnvironmentDefinition)def.Value);
+                        else
+                            currentDefinitions.Definitions.Add(def.Key, def.Value);
+    }
+                    else
+                        currentDefinitions.Definitions.Remove(def.Key);
+}
+            }
+        }
     }
 }

@@ -1,17 +1,15 @@
 ﻿using ProtoBuf;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Xml.Serialization;
 
-namespace Sandbox.Common.ObjectBuilders.Definitions
+namespace VRage.Game
 {
     [ProtoContract]
     public class MyCharacterName
     {
         [XmlAttribute]
+#if !XB1 // XB1_NOPROTOBUF
         [ProtoMember(1)]
+#endif // !XB1
         public string Name;
     }
 }

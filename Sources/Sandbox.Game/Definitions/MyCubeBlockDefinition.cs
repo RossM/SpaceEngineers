@@ -12,17 +12,17 @@ using System.Linq;
 using VRage.Utils;
 using Sandbox.Game.Entities;
 using Sandbox.Game.AI.Pathfinding;
-using Sandbox.Common.ObjectBuilders.AI;
 using Sandbox.Engine.Utils;
 using VRage;
-using Sandbox.Common.ObjectBuilders.VRageData;
 using Sandbox.Game;
-using VRage.Utils;
 using VRage.Library.Utils;
 using VRage.FileSystem;
-using Sandbox.Common.ObjectBuilders.ComponentSystem;
+using VRage.Game;
+using VRage.Game.ObjectBuilders.ComponentSystem;
 using VRage.ObjectBuilders;
-using VRage.Components;
+using VRage.Game.Components;
+using VRage.Game.Definitions;
+using VRage.Game.ObjectBuilders.Definitions.SessionComponents;
 
 namespace Sandbox.Definitions
 {
@@ -33,6 +33,55 @@ namespace Sandbox.Definitions
 
         public string[] Model;
         public Vector2I[] PatternSize;
+    }
+
+    public class CubeBlockEffectBase
+    {
+        public string Name;
+        public float ParameterMin;
+        public float ParameterMax;
+        public CubeBlockEffect[] ParticleEffects;
+        public CubeBlockEffect[] SoundEffects;
+
+        public CubeBlockEffectBase(string Name, float ParameterMin, float ParameterMax)
+        {
+            this.Name = Name;
+            this.ParameterMin = ParameterMin;
+            this.ParameterMax = ParameterMax;
+        }
+    }
+
+    public struct CubeBlockEffect
+    {
+        public string Name;
+        public string Origin;
+        public float Delay;
+        public bool Loop;
+        public float SpawnTimeMin;
+        public float SpawnTimeMax;
+        public float Duration;
+
+        public CubeBlockEffect(string Name, string Origin, float Delay, bool Loop, float SpawnTimeMin, float SpawnTimeMax, float Duration)
+        {
+            this.Name = Name;
+            this.Origin = Origin;
+            this.Delay = Delay;
+            this.Loop = Loop;
+            this.SpawnTimeMin = SpawnTimeMin;
+            this.SpawnTimeMax = SpawnTimeMax;
+            this.Duration = Duration;
+        }
+
+        public CubeBlockEffect(VRage.Game.MyObjectBuilder_CubeBlockDefinition.CubeBlockEffect Effect)
+        {
+            this.Name = Effect.Name;
+            this.Origin = Effect.Origin;
+            this.Delay = Effect.Delay;
+            this.Loop = Effect.Loop;
+            this.SpawnTimeMin = Effect.SpawnTimeMin;
+            this.SpawnTimeMax = Effect.SpawnTimeMax;
+            this.Duration = Effect.Duration;
+        }
     }
 
     public class MyCubeBlockDefinitionGroup
@@ -101,6 +150,7 @@ namespace Sandbox.Definitions
         {
             public MyComponentDefinition Definition;
             public int Count;
+            public MyPhysicalItemDefinition DeconstructItem;
         }
 
         public class BuildProgressModel
@@ -154,6 +204,11 @@ namespace Sandbox.Definitions
 			/// </summary>
 			public bool Enabled;
 
+            /// <summary>
+            /// Mark mount point as default for autorotate.
+            /// </summary>
+            public bool Default;
+
             public MyObjectBuilder_CubeBlockDefinition.MountPoint GetObjectBuilder(Vector3I cubeSize)
             {
                 MyObjectBuilder_CubeBlockDefinition.MountPoint ob = new MyObjectBuilder_CubeBlockDefinition.MountPoint();
@@ -171,6 +226,7 @@ namespace Sandbox.Definitions
                 ob.ExclusionMask = ExclusionMask;
                 ob.PropertiesMask = PropertiesMask;
 				ob.Enabled = Enabled;
+                ob.Default = Default;
 
                 return ob;
             }
@@ -182,6 +238,7 @@ namespace Sandbox.Definitions
         public Vector3 ModelOffset;
         public bool UseModelIntersection = false;
         public MyCubeDefinition CubeDefinition;
+        public bool SilenceableByShipSoundSystem = false;
 
         // Following group of properties is set by the MyDefinitionManager class
         /// <summary>
@@ -192,9 +249,11 @@ namespace Sandbox.Definitions
 
         public float CriticalIntegrityRatio;
         public float OwnershipIntegrityRatio;
+        public float MaxIntegrityRatio; // Ratio between the manually set MaxIntegrity and the max integrity calculated from the components
         public float MaxIntegrity;
 
         public int? DamageEffectID = null;//defaults to no effect
+        public CubeBlockEffectBase[] Effects;
 
         public MountPoint[] MountPoints;
         public Dictionary<Vector3I, Dictionary<Vector3I, bool>> IsCubePressurized;
@@ -218,7 +277,7 @@ namespace Sandbox.Definitions
         /// <summary>
         /// Building type - always lower case (wall, ...).
         /// </summary>
-        public string BuildType;
+        public MyStringId BuildType;
 
         /// <summary>
         /// Build material - always lower case (for walls - "stone", "wood"). 
@@ -243,7 +302,10 @@ namespace Sandbox.Definitions
         /// </summary>
         public float BuildProgressToPlaceGeneratedBlocks;
 
+        public bool CreateFracturedPieces;
+
         public string[] CompoundTemplates;
+        public bool CompoundEnabled;
 
         public string MultiBlock;
 
@@ -328,6 +390,11 @@ namespace Sandbox.Definitions
         public bool Mirrored { get; private set; }
         public bool RandomRotation { get; private set; }
 
+        /// <summary>
+        /// Defines how much block can penetrate voxel.
+        /// </summary>
+        public VoxelPlacementOverride? VoxelPlacement;
+
         protected override void Init(MyObjectBuilder_DefinitionBase builder)
         {
             base.Init(builder);
@@ -348,6 +415,7 @@ namespace Sandbox.Definitions
             this.m_symmetryY           = ob.MirroringY;
             this.m_symmetryZ           = ob.MirroringZ;
             this.DeformationRatio      = ob.DeformationRatio;
+            this.SilenceableByShipSoundSystem = ob.SilenceableByShipSoundSystem;
             this.EdgeType              = ob.EdgeType;
             this.AutorotateMode        = ob.AutorotateMode;
             this.m_mirroringBlock      = ob.MirroringBlock;
@@ -357,10 +425,36 @@ namespace Sandbox.Definitions
             this.Direction             = ob.Direction;
             this.Mirrored              = ob.Mirrored;
             this.RandomRotation        = ob.RandomRotation;
-            this.BuildType             = ob.BuildType != null ? ob.BuildType.ToLower() : null;
+            this.BuildType             = MyStringId.GetOrCompute(ob.BuildType != null ? ob.BuildType.ToLower() : null);
             this.BuildMaterial         = ob.BuildMaterial != null ? ob.BuildMaterial.ToLower() : null;
             this.BuildProgressToPlaceGeneratedBlocks = ob.BuildProgressToPlaceGeneratedBlocks;
             this.GeneratedBlockType    = MyStringId.GetOrCompute(ob.GeneratedBlockType != null ? ob.GeneratedBlockType.ToLower() : null);
+            this.CompoundEnabled       = ob.CompoundEnabled;
+            this.CreateFracturedPieces = ob.CreateFracturedPieces;
+            this.VoxelPlacement      = ob.VoxelPlacement;
+
+            if (ob.PhysicalMaterial != null)
+            {
+                this.PhysicalMaterial = MyDefinitionManager.Static.GetPhysicalMaterialDefinition(ob.PhysicalMaterial);
+            }
+            if (ob.Effects != null)
+            {
+                this.Effects = new CubeBlockEffectBase[ob.Effects.Length];
+                for (int i = 0; i < ob.Effects.Length; i++)
+                {
+                    this.Effects[i] = new CubeBlockEffectBase(ob.Effects[i].Name, ob.Effects[i].ParameterMin, ob.Effects[i].ParameterMax);
+                    if (ob.Effects[i].ParticleEffects != null && ob.Effects[i].ParticleEffects.Length > 0)
+                    {
+                        this.Effects[i].ParticleEffects = new CubeBlockEffect[ob.Effects[i].ParticleEffects.Length];
+                        for (int j = 0; j < ob.Effects[i].ParticleEffects.Length; j++)
+                        {
+                            this.Effects[i].ParticleEffects[j] = new CubeBlockEffect(ob.Effects[i].ParticleEffects[j]);
+                        }
+                    }
+                    else
+                        this.Effects[i].ParticleEffects = null;
+                }
+            }
             if (ob.DamageEffectId != 0)
                 this.DamageEffectID = ob.DamageEffectId;
 
@@ -423,6 +517,9 @@ namespace Sandbox.Definitions
             float mass = 0.0f;
             float criticalIntegrity = 0f;
             float ownershipIntegrity = 0f;
+
+            MaxIntegrityRatio = 1;
+
             if (components != null && components.Length != 0)
             {
                 Components = new MyCubeBlockDefinition.Component[components.Length];
@@ -433,10 +530,19 @@ namespace Sandbox.Definitions
                 {
                     var component = components[j];
 
+                    var definition = MyDefinitionManager.Static.GetComponentDefinition(new MyDefinitionId(component.Type, component.Subtype));
+                    MyPhysicalItemDefinition deconstructDefinition = null;
+                    if (!component.DeconstructId.IsNull() && !MyDefinitionManager.Static.TryGetPhysicalItemDefinition(component.DeconstructId, out deconstructDefinition))
+                        deconstructDefinition = definition;
+
+                    if (deconstructDefinition == null)
+                        deconstructDefinition = definition;
+
                     MyCubeBlockDefinition.Component tmp = new MyCubeBlockDefinition.Component()
                     {
+                        Definition = definition,
                         Count = component.Count,
-                        Definition = MyDefinitionManager.Static.GetComponentDefinition(new MyDefinitionId(component.Type, component.Subtype))
+                        DeconstructItem = deconstructDefinition,
                     };
 
                     if (component.Type == typeof(MyObjectBuilder_Component) && component.Subtype == "Computer")
@@ -463,15 +569,18 @@ namespace Sandbox.Definitions
                 }
 
                 MaxIntegrity = integrity;
+                IntegrityPointsPerSec = MaxIntegrity / ob.BuildTimeSeconds;
+                DisassembleRatio = ob.DisassembleRatio;
 
                 if (ob.MaxIntegrity != 0)
                 {
-                    criticalIntegrity = ob.MaxIntegrity * criticalIntegrity / MaxIntegrity;
-                    MaxIntegrity = ob.MaxIntegrity;
+                    // If we specify MaxIntegrity for a block, it conflicts with the original integrity
+                    // So instead of overriding the MaxIntegrity, we multiply DeformationRatio so that the block
+                    // behaves as if it had the integrity that we want!
+                    MaxIntegrityRatio = ob.MaxIntegrity / MaxIntegrity;
+                    DeformationRatio = DeformationRatio / MaxIntegrityRatio;
                 }
 
-                IntegrityPointsPerSec = MaxIntegrity / ob.BuildTimeSeconds;
-                DisassembleRatio = ob.DisassembleRatio;
                 if(!MyPerGameSettings.Destruction)
                     Mass = mass;
             }
@@ -541,6 +650,7 @@ namespace Sandbox.Definitions
             ActionSound = new MySoundPair(ob.ActionSound);
             if (ob.DamagedSound!=null)
                 DamagedSound = new MySoundPair(ob.DamagedSound);
+
         }
 
         public override MyObjectBuilder_DefinitionBase GetObjectBuilder()
@@ -551,6 +661,7 @@ namespace Sandbox.Definitions
             ob.Model = this.Model;
             ob.UseModelIntersection = this.UseModelIntersection;
             ob.CubeSize = this.CubeSize;
+            ob.SilenceableByShipSoundSystem = this.SilenceableByShipSoundSystem;
             ob.ModelOffset = this.ModelOffset;
             ob.BlockTopology = this.BlockTopology;
             ob.PhysicsOption = this.PhysicsOption;
@@ -568,16 +679,21 @@ namespace Sandbox.Definitions
             ob.Rotation = this.Rotation;
             ob.Direction = this.Direction;
             ob.Mirrored = this.Mirrored;
-            ob.BuildType = this.BuildType;
+            ob.BuildType = this.BuildType.ToString();
             ob.BuildMaterial = this.BuildMaterial;
             ob.GeneratedBlockType = this.GeneratedBlockType.ToString();
             ob.DamageEffectId = this.DamageEffectID.HasValue ? this.DamageEffectID.Value : 0;
             ob.CompoundTemplates = this.CompoundTemplates;
-            ob.Icon = Icon;
+            ob.Icons = Icons;
             ob.Points = this.Points;
+            ob.VoxelPlacement = this.VoxelPlacement;
             //ob.SubBlockDefinitions = SubBlockDefinitions;
             //ob.BlockVariants = BlockVariants;
-
+            if (this.PhysicalMaterial != null)
+            {
+                ob.PhysicalMaterial = this.PhysicalMaterial.Id.SubtypeName;
+            }
+            ob.CompoundEnabled = this.CompoundEnabled;
             
             if (Components != null)
             {
@@ -771,7 +887,7 @@ namespace Sandbox.Definitions
                 {
                     def.MountPoints = null;
                     string msg = "Obsolete default definition of mount points in " + def.Id;
-                    MyDefinitionErrors.Add(Context, msg, ErrorSeverity.Warning);
+                    MyDefinitionErrors.Add(Context, msg, TErrorSeverity.Warning);
                 }
             }
 
@@ -888,6 +1004,7 @@ namespace Sandbox.Definitions
 				mountPoints[i].ExclusionMask = mpBuilder.ExclusionMask;
 				mountPoints[i].PropertiesMask = mpBuilder.PropertiesMask;
 				mountPoints[i].Enabled = mpBuilder.Enabled;
+                mountPoints[i].Default = mpBuilder.Default;
 			}
 		}
 

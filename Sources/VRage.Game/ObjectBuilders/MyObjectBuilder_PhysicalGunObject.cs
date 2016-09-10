@@ -1,11 +1,10 @@
 ﻿using ProtoBuf;
 using VRage.ObjectBuilders;
-using VRage.Library.Utils;
 using VRage.Utils;
 using System.Xml.Serialization;
 using VRage.Serialization;
 
-namespace Sandbox.Common.ObjectBuilders
+namespace VRage.Game
 {
     [ProtoContract]
     [MyObjectBuilderDefinition]
@@ -27,6 +26,5 @@ namespace Sandbox.Common.ObjectBuilders
         {
             return false; // weapons shouldn't stack
         }
-
     }
 }
